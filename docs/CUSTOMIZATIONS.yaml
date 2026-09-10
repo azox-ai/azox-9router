@@ -131,7 +131,8 @@
       "behaviors_not_carried_from_old_fork": 46
     },
     "live_production": "Eight direct Codex probes passed: chat and Responses, streaming and non-streaming, on gpt-5.6-terra and gpt-6-astra. No InvalidStreamResponseError or runtime TypeError/ReferenceError was observed.",
-    "known_blocker": "Live Claude provider-backed prefill verification is blocked by a pre-existing revoked OAuth token and invalid refresh token. Prefill policy and fallback unit tests pass."
+    "live_claude_prefill": "Verified live on 2026-09-10 against the running production gateway. The previously recorded revoked-OAuth blocker no longer applies: the Claude connection refreshes successfully and serves traffic. Direct probes covering a trailing assistant text turn, a contentless trailing assistant, an interrupted function_call, and a reasoning-only tail all returned HTTP 200 through both /v1/messages and /v1/responses.",
+    "known_defects": "Production logs showed HTTP 400 \"does not support assistant message prefill\" on the openai-responses to claude combo path. Root cause: applyAssistantPrefillPolicy checked messages.at(-1) once, so dropping a contentless trailing assistant could expose another assistant turn, and a body whose only turn was a contentless assistant was left with an empty messages array that prepareClaudeRequest then dereferenced. Fixed on branch fix/claude-prefill-invariant-loop (pull request 2); not yet deployed."
   },
   "maintenance_rules": [
     "Compare this manifest and its counts with git diff --name-status against upstream_sha before release.",

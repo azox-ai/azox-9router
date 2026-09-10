@@ -39,50 +39,62 @@ function hasServerToolUse(content) {
   );
 }
 
+function continuationTurn() {
+  return {
+    role: ROLE.USER,
+    content: [{ type: CLAUDE_BLOCK.TEXT, text: ASSISTANT_CONTINUATION_PROMPT }],
+  };
+}
+
 export function applyAssistantPrefillPolicy(body, rawHeaders = null) {
   if (!Array.isArray(body?.messages)) return body;
   // Explicit compatibility escape hatch: preserving assistant prefill bypasses
   // the Claude terminal-user invariant and can reproduce upstream HTTP 400s.
   if (String(getHeader(rawHeaders, PRESERVE_HEADER) || "").toLowerCase() === "preserve") return body;
 
-  const trailingAssistant = body.messages.at(-1);
-  if (trailingAssistant?.role !== ROLE.ASSISTANT) return body;
+  // Dropping a contentless trailing assistant can expose ANOTHER assistant turn
+  // underneath it (consecutive assistant turns survive when the merge pass runs
+  // before this policy, e.g. an interrupted turn followed by an empty one). The
+  // invariant must therefore be re-checked after every drop, not checked once.
+  while (body.messages.length > 0) {
+    const trailingAssistant = body.messages.at(-1);
+    if (trailingAssistant?.role !== ROLE.ASSISTANT) return body;
 
-  const toolUses = Array.isArray(trailingAssistant.content)
-    ? trailingAssistant.content.filter(block => block?.type === CLAUDE_BLOCK.TOOL_USE && block.id)
-    : [];
-  if (toolUses.length > 0) {
-    body.messages.push({
-      role: ROLE.USER,
-      content: toolUses.map(toolUse => ({
-        type: CLAUDE_BLOCK.TOOL_RESULT,
-        tool_use_id: toolUse.id,
-        is_error: true,
-        content: INCOMPLETE_TOOL_RESULT,
-      })),
-    });
+    const toolUses = Array.isArray(trailingAssistant.content)
+      ? trailingAssistant.content.filter(block => block?.type === CLAUDE_BLOCK.TOOL_USE && block.id)
+      : [];
+    if (toolUses.length > 0) {
+      body.messages.push({
+        role: ROLE.USER,
+        content: toolUses.map(toolUse => ({
+          type: CLAUDE_BLOCK.TOOL_RESULT,
+          tool_use_id: toolUse.id,
+          is_error: true,
+          content: INCOMPLETE_TOOL_RESULT,
+        })),
+      });
+      return body;
+    }
+
+    // A valid Anthropic server tool block or reasoning block is provider-owned
+    // history. Keep it, but still restore the terminal-user invariant used for
+    // the next request.
+    if (hasServerToolUse(trailingAssistant.content) || hasPreservableReasoning(trailingAssistant.content)) {
+      body.messages.push(continuationTurn());
+      return body;
+    }
+
+    if (!hasText(trailingAssistant.content)) {
+      body.messages.pop();
+      continue;
+    }
+
+    body.messages.push(continuationTurn());
     return body;
   }
 
-  // A valid Anthropic server tool block or reasoning block is provider-owned
-  // history. Keep it, but still restore the terminal-user invariant used for
-  // the next request.
-  if (hasServerToolUse(trailingAssistant.content) || hasPreservableReasoning(trailingAssistant.content)) {
-    body.messages.push({
-      role: ROLE.USER,
-      content: [{ type: CLAUDE_BLOCK.TEXT, text: ASSISTANT_CONTINUATION_PROMPT }],
-    });
-    return body;
-  }
-
-  if (!hasText(trailingAssistant.content)) {
-    body.messages.pop();
-    return body;
-  }
-
-  body.messages.push({
-    role: ROLE.USER,
-    content: [{ type: CLAUDE_BLOCK.TEXT, text: ASSISTANT_CONTINUATION_PROMPT }],
-  });
+  // Every turn was a contentless assistant prefill. An empty messages[] is
+  // itself a 400 ("at least 1 message"), so leave a minimal user turn behind.
+  body.messages.push(continuationTurn());
   return body;
 }
