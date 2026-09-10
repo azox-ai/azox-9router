@@ -52,6 +52,8 @@ describe("portal connection sync route", () => {
       expiresAt: "2030-01-01T00:00:00Z",
       tokenVersion: 7,
       email: "user@example.com",
+      name: "user@example.com",
+      displayName: "Sponsored by: anhth2",
     }), context);
 
     expect(response.status).toBe(200);
@@ -61,6 +63,8 @@ describe("portal connection sync route", () => {
       accessToken: "access-token",
       expiresAt: "2030-01-01T00:00:00.000Z",
       email: "user@example.com",
+      name: "user@example.com",
+      displayName: "Sponsored by: anhth2",
       providerSpecificData: expect.objectContaining({ portalExternalId: "account-1", portalTokenVersion: 7 }),
     }));
     expect(mocks.createProviderConnection.mock.calls[0][0]).not.toHaveProperty("refreshToken");

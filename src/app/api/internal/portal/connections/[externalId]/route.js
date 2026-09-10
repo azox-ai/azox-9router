@@ -46,6 +46,10 @@ function normalizeBody(body) {
     tokenVersion,
     email: typeof body.email === "string" ? body.email : undefined,
     name: typeof body.name === "string" ? body.name : undefined,
+    // Second display line in the dashboard connection row. The portal sends
+    // "Sponsored by: <user>" so an operator can see which portal user owns an
+    // account without opening the portal.
+    displayName: typeof body.displayName === "string" ? body.displayName : undefined,
     idToken: typeof body.idToken === "string" ? body.idToken : undefined,
     scope: typeof body.scope === "string" ? body.scope : undefined,
     tokenType: typeof body.tokenType === "string" ? body.tokenType : undefined,
@@ -103,6 +107,7 @@ export async function PUT(request, { params }) {
     providerSpecificData,
     ...(input.email ? { email: input.email } : {}),
     ...(input.name ? { name: input.name } : {}),
+    ...(input.displayName ? { displayName: input.displayName } : {}),
     ...(input.idToken ? { idToken: input.idToken } : {}),
     ...(input.scope ? { scope: input.scope } : {}),
     ...(input.tokenType ? { tokenType: input.tokenType } : {}),
