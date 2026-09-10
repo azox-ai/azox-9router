@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { normalizeClaudePassthrough, prepareClaudeRequest } from "../../open-sse/translator/formats/claude.js";
+import { applyAssistantPrefillPolicy } from "../../open-sse/translator/concerns/assistantPrefillPolicy.js";
 import { DEFAULT_CAPABILITIES, MODEL_CAPABILITIES, PATTERN_CAPABILITIES } from "../../open-sse/providers/capabilities.js";
 
 const continuationPattern = /continue.*without repeating/i;
@@ -157,6 +158,94 @@ describe.each(paths)("assistant prefill policy — %s", (_name, run) => {
       expect.objectContaining({ type: "tool_use", id: "tool-1" }),
     ]));
   });
+});
+
+// The policy is also called directly by the two Claude entry points, so it must
+// hold the terminal-user invariant on its own — the callers' cleanup passes are
+// not guaranteed to have merged or dropped consecutive assistant turns first.
+describe("assistant prefill policy — terminal-user invariant", () => {
+  function policy(messages, headers = null) {
+    const body = { messages: structuredClone(messages) };
+    applyAssistantPrefillPolicy(body, headers);
+    return body;
+  }
+
+  it.each([
+    ["empty content array", []],
+    ["empty text block", [{ type: "text", text: "" }]],
+    ["whitespace text block", [{ type: "text", text: "   " }]],
+    ["missing content", undefined],
+  ])("re-checks the tail after dropping a %s assistant", (_case, content) => {
+    const out = policy([
+      { role: "user", content: "Start" },
+      { role: "assistant", content: [{ type: "text", text: "Partial answer" }] },
+      content === undefined ? { role: "assistant" } : { role: "assistant", content },
+    ]);
+
+    expect(out.messages.map(message => message.role)).toEqual(["user", "assistant", "user"]);
+    expect(JSON.stringify(out.messages.at(-1).content)).toMatch(continuationPattern);
+  });
+
+  it("drops a whole run of contentless assistant turns", () => {
+    const out = policy([
+      { role: "user", content: "Start" },
+      { role: "assistant", content: [{ type: "text", text: "" }] },
+      { role: "assistant", content: [] },
+      { role: "assistant", content: [{ type: "text", text: "  " }] },
+    ]);
+
+    expect(out.messages.map(message => message.role)).toEqual(["user"]);
+  });
+
+  it("completes an interrupted tool_use exposed under an empty assistant", () => {
+    const out = policy([
+      { role: "user", content: "Start" },
+      { role: "assistant", content: [{ type: "tool_use", id: "tool-1", name: "lookup", input: {} }] },
+      { role: "assistant", content: [] },
+    ]);
+
+    expect(out.messages.map(message => message.role)).toEqual(["user", "assistant", "user"]);
+    expect(out.messages.at(-1).content).toEqual([
+      expect.objectContaining({ type: "tool_result", tool_use_id: "tool-1", is_error: true }),
+    ]);
+  });
+
+  it("never leaves messages empty when every turn is a contentless prefill", () => {
+    const out = policy([{ role: "assistant", content: [] }]);
+
+    expect(out.messages).toHaveLength(1);
+    expect(out.messages[0].role).toBe("user");
+  });
+
+  it("leaves an already-terminal user turn untouched", () => {
+    const messages = [
+      { role: "user", content: "Start" },
+      { role: "assistant", content: [{ type: "text", text: "Answer" }] },
+      { role: "user", content: "Next" },
+    ];
+
+    expect(policy(messages).messages).toEqual(messages);
+  });
+
+  it("preserves a stacked prefill when the header opts in", () => {
+    const messages = [
+      { role: "user", content: "Start" },
+      { role: "assistant", content: [{ type: "text", text: "Partial answer" }] },
+      { role: "assistant", content: [] },
+    ];
+    const out = policy(messages, { "x-9router-assistant-prefill": "preserve" });
+
+    expect(out.messages).toEqual(messages);
+  });
+});
+
+// prepareClaudeRequest dereferences the tail after the policy runs; a body whose
+// only turn is a contentless assistant must not crash it.
+it("prepareClaudeRequest survives a single contentless assistant turn", () => {
+  const out = translated([{ role: "assistant", content: [] }]);
+
+  expect(out.messages).toHaveLength(1);
+  expect(out.messages[0].role).toBe("user");
 });
 
 const foreignServerToolId = "call_50b82aba1b754d82a4408a53";
