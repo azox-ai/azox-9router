@@ -70,6 +70,22 @@ describe("dashboard guard public LLM API access", () => {
     expect(mocks.validateApiKey).not.toHaveBeenCalled();
   });
 
+  it("allows portal internal API with valid service token", async () => {
+    process.env.PORTAL_SYNC_TOKEN = "portal-secret";
+    const response = await proxy(request("/api/internal/portal/connections/account-1", {
+      authorization: "Bearer portal-secret",
+    }));
+    expect(response).toBe(mocks.nextResponse);
+  });
+
+  it("rejects portal internal API with invalid service token", async () => {
+    process.env.PORTAL_SYNC_TOKEN = "portal-secret";
+    const response = await proxy(request("/api/internal/portal/connections/account-1", {
+      authorization: "Bearer wrong",
+    }));
+    expect(response.status).toBe(401);
+  });
+
   it("rejects remote Host-spoof when real peer IP is non-loopback", async () => {
     const response = await proxy(localRequest("/v1/chat/completions", {
       host: "localhost",
