@@ -84,6 +84,26 @@
       "tests": [
         "tests/unit/combo-import-export.test.js"
       ]
+    },
+    "portal_credential_sync": {
+      "upgrade_critical": true,
+      "purpose": "Consume access-token-only Codex and Claude credentials from AZOX LLM Portal without sharing rotating OAuth refresh tokens between processes.",
+      "authority_contract": "LLM Portal is the sole refresh-token owner. 9Router must never accept, retain, or locally rotate a Portal refresh token. A Portal push is the only credential update authority for rows identified by providerSpecificData.portalExternalId.",
+      "primary_paths": [
+        "src/app/api/internal/portal/connections/[externalId]/route.js",
+        "src/lib/auth/portalSync.js"
+      ],
+      "tests": [
+        "tests/unit/portal-sync-route.test.js"
+      ],
+      "required_upgrade_checks": [
+        "Preserve access-token-only writes and explicitly remove any stale stored refreshToken on update.",
+        "Preserve providerSpecificData.portalExternalId and monotonic portalTokenVersion ordering; reject stale versions without replacing a newer token.",
+        "Do not add Portal-managed rows to any local background refresh or missing-refresh-token deactivation path.",
+        "Keep direct-login OAuth refresh behavior unchanged for rows without portalExternalId.",
+        "Run the portal sync regression test and a production-style Codex and Claude smoke before rollout."
+      ],
+      "incident_reference": "On 2026-09-11/12 OmniRoute, not 9Router, misclassified Portal-managed rows with no refresh token and eventually deactivated Codex, surfacing HTTP 429 after retries. The shared root contract is nevertheless upgrade-critical for both routers because giving either router the rotating refresh token would create cross-router invalidation races."
     }
   },
   "retained_dependency_closure": {
@@ -136,6 +156,7 @@
   },
   "maintenance_rules": [
     "Compare this manifest and its counts with git diff --name-status against upstream_sha before release.",
+    "Treat supported_customizations.portal_credential_sync as upgrade-critical: every upstream merge, rebase, reset, authentication refactor, or credential-health change requires an explicit contract review and the listed regression checks.",
     "Do not restore retired Responses/SSE conversion seams without isolated regression tests covering content loss, duplicate content, stream and non-stream parity, and InvalidStreamResponseError.",
     "Keep additive helpers additive where possible; reduce whole-file dependency carryovers only with feature-level and baseline tests.",
     "Update upstream.ref, upstream.sha, diff counts, retained paths, tests, and known behavior losses together on every upstream reset."
