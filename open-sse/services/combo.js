@@ -350,7 +350,10 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
 
     try {
       throwIfAborted(signal);
-      let result = await handleSingleModel(body, modelStr);
+      let result = await handleSingleModel(body, modelStr, {
+        combo: comboName || null,
+        attempt: i + 1,
+      });
       if (signal?.aborted) {
         discardResponseBody(result, "combo request aborted");
         return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
