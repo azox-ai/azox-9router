@@ -302,7 +302,10 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
-      const result = await handleSingleModel(body, modelStr);
+      const result = await handleSingleModel(body, modelStr, {
+        combo: comboName || null,
+        attempt: i + 1,
+      });
       
       // Success (2xx) - return response
       if (result.ok) {
