@@ -141,6 +141,9 @@ export function createProviderConnectionInTransaction(db, data, { deduplicate = 
     const incomingWs = data.providerSpecificData?.chatgptAccountId;
     existing = all.find(c => {
       if (c.authType !== "oauth" || c.email !== data.email) return false;
+      // Portal-managed credentials have their own external identity and must
+      // never be claimed by a direct OAuth login for the same email/account.
+      if (c.providerSpecificData?.portalExternalId) return false;
 
       // Codex/OpenAI can issue multiple OAuth grants for the same email.
       // Refresh tokens are rotated single-use; collapsing a new login onto an
@@ -284,7 +287,21 @@ export async function upsertPortalManagedConnection(externalId, tokenVersion, pr
       return;
     }
     if (existing && tokenVersion === currentVersion) {
-      outcome = { status: "unchanged", connection: existing, tokenVersion: currentVersion };
+      // A same-version Portal replay may repair terminal health and metadata,
+      // but must not replace the current access token or expiry. Portal is the
+      // only refresh authority, so a prior router error cannot remain sticky.
+      const values = buildValues(existing);
+      const healed = {
+        ...existing,
+        ...resetHealthStateOnActivation(existing, { testStatus: "active" }),
+        refreshToken: undefined,
+        isActive: values.isActive,
+        displayName: values.displayName ?? existing.displayName,
+        name: values.name ?? existing.name,
+        updatedAt: new Date().toISOString(),
+      };
+      upsert(db, healed);
+      outcome = { status: "unchanged", connection: healed, tokenVersion: currentVersion };
       return;
     }
 

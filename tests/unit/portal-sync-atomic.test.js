@@ -56,6 +56,41 @@ describe("Portal credential identity and monotonic version", () => {
     expect(first.connection.refreshToken).toBeUndefined();
   });
 
+  it("keeps direct login separate when it arrives after a Portal-managed row", async () => {
+    const portal = await repo.upsertPortalManagedConnection(
+      "external-1", 1, "claude", () => portalValues("external-1", "portal-access", 1),
+    );
+    const direct = await repo.createProviderConnection({
+      provider: "claude", authType: "oauth", email: "same@example.test",
+      accessToken: "direct-access", refreshToken: "direct-refresh", testStatus: "active",
+    });
+
+    expect(direct.id).not.toBe(portal.connection.id);
+    expect(await repo.getProviderConnectionById(portal.connection.id)).toMatchObject({
+      accessToken: "portal-access",
+      providerSpecificData: { portalExternalId: "external-1", portalTokenVersion: 1 },
+    });
+    expect((await repo.getProviderConnections({ provider: "claude" }))).toHaveLength(2);
+  });
+
+  it("replays the current Portal version to clear stale health without rotating credentials", async () => {
+    const created = await repo.upsertPortalManagedConnection(
+      "external-1", 2, "claude", () => portalValues("external-1", "portal-access", 2),
+    );
+    await repo.updateProviderConnection(created.connection.id, {
+      testStatus: "unavailable", errorCode: "no_refresh_token", lastError: "stale failure",
+    });
+    const replay = await repo.upsertPortalManagedConnection(
+      "external-1", 2, "claude", () => portalValues("external-1", "portal-access", 2),
+    );
+
+    expect(replay.tokenVersion).toBe(2);
+    expect(await repo.getProviderConnectionById(created.connection.id)).toMatchObject({
+      accessToken: "portal-access", testStatus: "active", errorCode: null, lastError: null,
+      providerSpecificData: { portalExternalId: "external-1", portalTokenVersion: 2 },
+    });
+  });
+
   it("rejects stale and equal version updates without changing stored token", async () => {
     await repo.upsertPortalManagedConnection(
       "external-1", 2, "claude", () => portalValues("external-1", "v2", 2),
