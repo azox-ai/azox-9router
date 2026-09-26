@@ -130,13 +130,13 @@ function reorderInTx(db, providerId) {
  * connection write in the same transaction prevents authorization revocation
  * from interleaving between validation and persistence.
  */
-export function createProviderConnectionInTransaction(db, data) {
+export function createProviderConnectionInTransaction(db, data, { deduplicate = true } = {}) {
   const now = new Date().toISOString();
 
   const all = db.all(`SELECT * FROM providerConnections WHERE provider = ?`, [data.provider]).map(rowToConn);
 
   let existing = null;
-  if (data.authType === "oauth" && data.email) {
+  if (deduplicate && data.authType === "oauth" && data.email) {
     const incomingUsername = data.providerSpecificData?.username;
     const incomingWs = data.providerSpecificData?.chatgptAccountId;
     existing = all.find(c => {
@@ -169,7 +169,7 @@ export function createProviderConnectionInTransaction(db, data) {
       if (incomingUsername || existingUsername) return false;
       return true;
     });
-  } else if (data.authType === "apikey" && data.name) {
+  } else if (deduplicate && data.authType === "apikey" && data.name) {
     existing = all.find(c => c.authType === "apikey" && c.name === data.name);
   }
   // access_token: never dedup — user manages duplicates manually
@@ -223,7 +223,7 @@ export async function createProviderConnection(data, options = {}) {
       result = null;
       return;
     }
-    result = createProviderConnectionInTransaction(db, data);
+    result = createProviderConnectionInTransaction(db, data, options);
   });
 
   return result;
@@ -258,6 +258,56 @@ export async function updateProviderConnection(id, data, options = {}) {
   // state change that never reached durable storage.
   if (result !== null && result !== undefined) options?.afterCommit?.(result);
   return result;
+}
+
+/**
+ * Compare-and-swap a Portal-managed credential inside one synchronous DB
+ * transaction. Portal identity is portalExternalId, never provider/email.
+ */
+export async function upsertPortalManagedConnection(externalId, tokenVersion, provider, buildValues) {
+  const db = await getAdapter();
+  let outcome;
+
+  db.transaction(() => {
+    const rows = db.all(`SELECT * FROM providerConnections`);
+    const existing = rows.map(rowToConn).find((connection) =>
+      connection.providerSpecificData?.portalExternalId === externalId
+    ) || null;
+    const currentVersion = existing?.providerSpecificData?.portalTokenVersion || 0;
+
+    if (existing && provider !== existing.provider) {
+      outcome = { status: "provider_mismatch", connection: existing, tokenVersion: currentVersion };
+      return;
+    }
+    if (existing && tokenVersion < currentVersion) {
+      outcome = { status: "stale", connection: existing, tokenVersion: currentVersion };
+      return;
+    }
+    if (existing && tokenVersion === currentVersion) {
+      outcome = { status: "unchanged", connection: existing, tokenVersion: currentVersion };
+      return;
+    }
+
+    const values = buildValues(existing);
+    if (existing) {
+      // Portal is the sole refresh-token owner. An explicit undefined removes
+      // any stale value inherited from an older or incorrectly-classified row.
+      const merged = {
+        ...existing,
+        ...values,
+        refreshToken: undefined,
+        updatedAt: new Date().toISOString(),
+      };
+      upsert(db, merged);
+      outcome = { status: "updated", connection: merged, tokenVersion };
+      return;
+    }
+
+    const connection = createProviderConnectionInTransaction(db, values, { deduplicate: false });
+    outcome = { status: "created", connection, tokenVersion };
+  });
+
+  return outcome;
 }
 
 export async function deleteProviderConnection(id) {

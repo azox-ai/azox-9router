@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, OAuthModal } from "@/shared/components";
 import { OAUTH_PROVIDERS } from "@/shared/constants/providers";
+import { isContributorProviderSupported } from "@/lib/contributor/supportedProviders";
 
 export default function ContributorPage() {
   const [session, setSession] = useState(null);
@@ -26,7 +27,7 @@ export default function ContributorPage() {
     () =>
       (session?.allowedProviders || [])
         .map((id) => [id, OAUTH_PROVIDERS[id]])
-        .filter(([, provider]) => provider),
+        .filter(([id, provider]) => isContributorProviderSupported(id, provider)),
     [session],
   );
 

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getProviderNames } from "@/lib/oauth/providers";
+import { isContributorProviderSupported } from "@/lib/contributor/supportedProviders";
+import { OAUTH_PROVIDERS } from "@/shared/constants/providers";
 import {
   createContributorInvite,
   listContributorInvites,
@@ -44,7 +46,8 @@ export async function POST(request) {
     if (!alias) {
       return NextResponse.json({ error: "Alias is required" }, { status: 400 });
     }
-    const supported = new Set(getProviderNames());
+    const supported = new Set(getProviderNames().filter((id) =>
+      isContributorProviderSupported(id, OAUTH_PROVIDERS[id])));
     const allowedProviders = Array.isArray(body.allowedProviders)
       ? [...new Set(body.allowedProviders.filter((id) => supported.has(id)))]
       : [];

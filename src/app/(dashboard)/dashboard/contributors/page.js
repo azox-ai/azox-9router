@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Card } from "@/shared/components";
 import { OAUTH_PROVIDERS } from "@/shared/constants/providers";
+import { isContributorProviderSupported } from "@/lib/contributor/supportedProviders";
 
 const DEFAULT_PROVIDERS = ["claude", "codex"];
 
@@ -12,7 +13,8 @@ function formatDate(value) {
 
 export default function ContributorsAdminPage() {
   const providerOptions = useMemo(
-    () => Object.entries(OAUTH_PROVIDERS).filter(([, provider]) => !provider.hidden),
+    () => Object.entries(OAUTH_PROVIDERS).filter(([id, provider]) =>
+      isContributorProviderSupported(id, provider)),
     [],
   );
   const [alias, setAlias] = useState("");

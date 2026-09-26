@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 import {
-  createProviderConnection,
   deleteProviderConnection,
   getProviderConnections,
-  updateProviderConnection,
 } from "@/models";
+import { upsertPortalManagedConnection } from "@/lib/db/index";
 import { hasValidPortalSyncToken } from "@/lib/auth/portalSync";
 
 const ALLOWED_PROVIDERS = new Set(["claude", "codex"]);
@@ -72,61 +71,48 @@ export async function PUT(request, { params }) {
     return NextResponse.json({ error: error.message || "Invalid request" }, { status: 400 });
   }
 
-  const existing = await findManagedConnection(externalId);
-  const currentVersion = existing?.providerSpecificData?.portalTokenVersion || 0;
-  if (existing && input.tokenVersion < currentVersion) {
-    return NextResponse.json({ error: "Stale tokenVersion", tokenVersion: currentVersion }, { status: 409 });
-  }
-  if (existing && existing.provider !== input.provider) {
+  const outcome = await upsertPortalManagedConnection(
+    externalId,
+    input.tokenVersion,
+    input.provider,
+    (existing) => ({
+      provider: input.provider,
+      authType: "oauth",
+      accessToken: input.accessToken,
+      expiresAt: input.expiresAt,
+      lastRefreshAt: new Date().toISOString(),
+      testStatus: "active",
+      isActive: input.enabled,
+      refreshToken: undefined,
+      providerSpecificData: {
+        ...(existing?.providerSpecificData || {}),
+        ...input.providerSpecificData,
+        portalExternalId: externalId,
+        portalTokenVersion: input.tokenVersion,
+      },
+      ...(input.email ? { email: input.email } : {}),
+      ...(input.name ? { name: input.name } : {}),
+      ...(input.displayName ? { displayName: input.displayName } : {}),
+      ...(input.idToken ? { idToken: input.idToken } : {}),
+      ...(input.scope ? { scope: input.scope } : {}),
+      ...(input.tokenType ? { tokenType: input.tokenType } : {}),
+    }),
+  );
+
+  if (outcome.status === "provider_mismatch") {
     return NextResponse.json({ error: "Provider cannot be changed" }, { status: 409 });
   }
-  if (existing && input.tokenVersion === currentVersion) {
-    return NextResponse.json({
-      id: existing.id,
-      provider: existing.provider,
-      enabled: existing.isActive !== false,
-      expiresAt: existing.expiresAt || null,
-      tokenVersion: currentVersion,
-    });
+  if (outcome.status === "stale") {
+    return NextResponse.json({ error: "Stale tokenVersion", tokenVersion: outcome.tokenVersion }, { status: 409 });
   }
 
-  const providerSpecificData = {
-    ...(existing?.providerSpecificData || {}),
-    ...input.providerSpecificData,
-    portalExternalId: externalId,
-    portalTokenVersion: input.tokenVersion,
-  };
-  const values = {
-    provider: input.provider,
-    authType: "oauth",
-    accessToken: input.accessToken,
-    expiresAt: input.expiresAt,
-    lastRefreshAt: new Date().toISOString(),
-    testStatus: "active",
-    isActive: input.enabled,
-    providerSpecificData,
-    ...(input.email ? { email: input.email } : {}),
-    ...(input.name ? { name: input.name } : {}),
-    ...(input.displayName ? { displayName: input.displayName } : {}),
-    ...(input.idToken ? { idToken: input.idToken } : {}),
-    ...(input.scope ? { scope: input.scope } : {}),
-    ...(input.tokenType ? { tokenType: input.tokenType } : {}),
-  };
-
-  // On update the key must be present and undefined: the repository merges the
-  // incoming object over the stored one and serializes it to JSON, so an
-  // explicit undefined is what actually drops a refresh token this router must
-  // never own. On create the key is omitted entirely.
-  const connection = existing
-    ? await updateProviderConnection(existing.id, { ...values, refreshToken: undefined })
-    : await createProviderConnection(values);
-
+  const connection = outcome.connection;
   return NextResponse.json({
     id: connection.id,
     provider: connection.provider,
     enabled: connection.isActive !== false,
-    expiresAt: input.expiresAt,
-    tokenVersion: input.tokenVersion,
+    expiresAt: connection.expiresAt || null,
+    tokenVersion: outcome.tokenVersion,
   });
 }
 

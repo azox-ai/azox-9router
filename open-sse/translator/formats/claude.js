@@ -275,7 +275,7 @@ export function normalizeClaudePassthrough(body, model = "", rawHeaders = null) 
       const kept = [];
       for (const block of msg.content) {
         if (block.type === CLAUDE_BLOCK.THINKING || block.type === CLAUDE_BLOCK.REDACTED_THINKING) {
-          if (isValidClaudeSignature(block.signature)) {
+          if (block.type === CLAUDE_BLOCK.REDACTED_THINKING || isValidClaudeSignature(block.signature)) {
             hasKeptThinking = true;
             kept.push(block);
           }
@@ -574,7 +574,11 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
             const isThinking = block.type === CLAUDE_BLOCK.THINKING || block.type === CLAUDE_BLOCK.REDACTED_THINKING;
             if (isThinking) {
               if (isClaudeNative) {
-                if (isValidClaudeSignature(block.signature)) {
+                // redacted_thinking is opaque server-owned history. It carries
+                // `data`, not a replayable thinking signature, and Anthropic
+                // accepts it unchanged. Do not treat it as an unsigned
+                // thinking block or prefill policy's preservation is undone.
+                if (block.type === CLAUDE_BLOCK.REDACTED_THINKING || isValidClaudeSignature(block.signature)) {
                   hasKeptThinking = true;
                   kept.push(block);
                 }

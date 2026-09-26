@@ -74,6 +74,10 @@ describe.each(paths)("assistant prefill policy — %s", (_name, run) => {
       data: "opaque-provider-blob",
       signature: VALID_CLAUDE_SIGNATURE,
     }],
+    ["opaque redacted thinking without signature", {
+      type: "redacted_thinking",
+      data: "opaque-provider-blob",
+    }],
   ])("keeps trailing %s and restores the user boundary", (_case, block) => {
     const out = run([
       { role: "user", content: "Start" },

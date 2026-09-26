@@ -52,11 +52,11 @@ describe("contributor session secret", () => {
     expect(fs.readFileSync(secretFile, "utf8").trim()).toBe(persisted);
   });
 
-  it("regenerates a zero-length secret instead of signing with an empty key", async () => {
+  it("refuses an empty secret rather than racing other workers to replace it", async () => {
     fs.writeFileSync(secretFile, "   ", { mode: 0o600 });
 
-    await expect(signWithCurrentSecret()).resolves.toBeTypeOf("string");
-    expect(fs.readFileSync(secretFile, "utf8").trim().length).toBeGreaterThan(0);
+    await expect(signWithCurrentSecret()).rejects.toThrow(/secret is empty/);
+    expect(fs.readFileSync(secretFile, "utf8")).toBe("   ");
   });
 
   it("propagates a read fault instead of silently rotating the live secret", async () => {

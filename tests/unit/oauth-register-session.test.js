@@ -184,6 +184,49 @@ describe("OAuth proxy session registration", () => {
     expect(mocks.stopCodexProxy).toHaveBeenCalledWith("reservation-hash-1");
   });
 
+  it("starts a fixed-port Codex proxy from POST body session parameters", async () => {
+    mocks.startCodexProxy.mockResolvedValueOnce({ success: true, port: 1455 });
+    mocks.registerCodexSession.mockReturnValueOnce(true);
+
+    const response = await POST(new Request(
+      "https://router.example/api/oauth/codex/start-proxy",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          appPort: 1455,
+          state: "state-direct",
+          codeVerifier: "verifier-direct",
+          redirectUri: "http://localhost:1455/auth/callback",
+        }),
+      },
+    ), { params: Promise.resolve({ provider: "codex", action: "start-proxy" }) });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ success: true, serverSide: true });
+    expect(mocks.registerCodexSession).toHaveBeenCalledWith(expect.objectContaining({
+      state: "state-direct",
+      codeVerifier: "verifier-direct",
+      redirectUri: "http://localhost:1455/auth/callback",
+    }));
+  });
+
+  it("keeps GitLab client secrets out of authorize query metadata", async () => {
+    mocks.generateAuthData.mockResolvedValueOnce({ authUrl: "https://gitlab.example/oauth/authorize" });
+
+    const response = await GET(
+      new Request("https://router.example/api/oauth/gitlab/authorize?clientId=public&baseUrl=https%3A%2F%2Fgitlab.example"),
+      { params: Promise.resolve({ provider: "gitlab", action: "authorize" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.generateAuthData).toHaveBeenCalledWith(
+      "gitlab",
+      expect.any(String),
+      expect.objectContaining({ clientId: "public", baseUrl: "https://gitlab.example" }),
+    );
+  });
+
   it("rejects OAuth session material in a start-proxy query URL", async () => {
     mocks.startCodexProxy.mockClear();
     const response = await GET(

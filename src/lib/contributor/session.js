@@ -12,12 +12,12 @@ function loadSecret() {
   // Only a genuinely absent or empty secret may be created. Rotating on any
   // other error (EACCES, EIO) would silently invalidate every live contributor
   // session, so those faults must propagate.
-  let existsButEmpty = false;
   try {
     const existing = fs.readFileSync(file, "utf8").trim();
     if (existing) return existing;
-    // A zero-length secret cannot sign or verify anything; replace it.
-    existsButEmpty = true;
+    // A zero-length file may be a partially written secret from another
+    // worker. Do not overwrite it: concurrent repair would split JWT keys.
+    throw new Error("Contributor session secret is empty; repair it while workers are stopped");
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
@@ -25,10 +25,7 @@ function loadSecret() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const candidate = crypto.randomBytes(32).toString("hex");
   try {
-    // Exclusive create unless we are repairing an empty file: concurrent
-    // cold-start workers must converge on one secret instead of
-    // last-write-wins, which breaks cross-worker verification.
-    fs.writeFileSync(file, candidate, { mode: 0o600, ...(existsButEmpty ? {} : { flag: "wx" }) });
+    fs.writeFileSync(file, candidate, { mode: 0o600, flag: "wx" });
     return candidate;
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;

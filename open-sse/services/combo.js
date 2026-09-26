@@ -387,7 +387,14 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
         // Ignore malformed, stalled, or oversized diagnostics. Caller abort is
         // checked below; the bounded reader already cancelled failed bodies.
       }
-      result = rebuildUpstreamResponse(result, errorBodyText);
+      // The bounded reader cancels bodies it cannot consume. Never turn that
+      // failure into a 400 with an empty body; return a bounded diagnostic
+      // instead when this attempt is the final response.
+      result = errorBodyText
+        ? rebuildUpstreamResponse(result, errorBodyText)
+        : result.bodyUsed
+          ? rebuildUpstreamResponse(result, JSON.stringify({ error: { message: errorText || `Upstream HTTP ${result.status}` } }))
+          : result;
 
       // Track earliest retryAfter across all combo models
       if (retryAfter !== null && (earliestRetryAfter === null || retryAfter < earliestRetryAfter)) {

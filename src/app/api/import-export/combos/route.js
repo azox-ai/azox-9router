@@ -12,6 +12,21 @@ const MAX_MODELS_PER_COMBO = 200;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
 const VALID_STRATEGIES = new Set(["fallback", "round-robin", "fusion"]);
+const FUSION_TUNING_FIELDS = ["minPanel", "stragglerGraceMs", "panelHardTimeoutMs"];
+
+function normalizeFusionTuning(raw) {
+  if (!isRecord(raw)) throw new Error("Fusion tuning must be an object");
+  const tuning = {};
+  for (const key of FUSION_TUNING_FIELDS) {
+    if (raw[key] === undefined) continue;
+    const value = raw[key];
+    if (!Number.isSafeInteger(value) || value < 1 || value > 600_000) {
+      throw new Error(`${key} must be a positive integer no greater than 600000`);
+    }
+    tuning[key] = value;
+  }
+  return tuning;
+}
 
 async function readJsonWithLimit(request) {
   return readRequestJson(request, {
@@ -33,6 +48,9 @@ function exportStrategy(raw) {
   if (fallbackStrategy === "fusion" && typeof raw?.judgeModel === "string" && raw.judgeModel.trim()) {
     result.judgeModel = raw.judgeModel.trim();
   }
+  if (fallbackStrategy === "fusion" && isRecord(raw?.fusionTuning)) {
+    result.fusionTuning = normalizeFusionTuning(raw.fusionTuning);
+  }
   return result;
 }
 
@@ -49,6 +67,9 @@ function normalizeStrategy(raw) {
       throw new Error("Judge model must be a string of 500 characters or fewer");
     }
     if (raw.judgeModel.trim()) result.judgeModel = raw.judgeModel.trim();
+  }
+  if (fallbackStrategy === "fusion" && raw.fusionTuning !== undefined) {
+    result.fusionTuning = normalizeFusionTuning(raw.fusionTuning);
   }
   return result;
 }

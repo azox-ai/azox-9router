@@ -44,7 +44,7 @@ describe("Combo Import/Export", () => {
       { name: "balanced", kind: "chat", models: ["cx/gpt", "cc/claude"] },
     ]);
     mocks.getSettings.mockResolvedValue({
-      comboStrategies: { balanced: { fallbackStrategy: "fusion", judgeModel: "cx/judge" } },
+      comboStrategies: { balanced: { fallbackStrategy: "fusion", judgeModel: "cx/judge", fusionTuning: { minPanel: 3, panelHardTimeoutMs: 45000 } } },
       apiKey: "must-not-export",
     });
 
@@ -58,7 +58,7 @@ describe("Combo Import/Export", () => {
         name: "balanced",
         kind: "chat",
         models: ["cx/gpt", "cc/claude"],
-        settings: { fallbackStrategy: "fusion", judgeModel: "cx/judge" },
+        settings: { fallbackStrategy: "fusion", judgeModel: "cx/judge", fusionTuning: { minPanel: 3, panelHardTimeoutMs: 45000 } },
       }],
     });
     expect(JSON.stringify(payload)).not.toContain("must-not-export");

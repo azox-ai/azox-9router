@@ -143,12 +143,15 @@
   },
   "verification": {
     "pure_upstream_full_suite": "36 files failed; 95 tests failed; 2,569 passed; 14 expected failures; 59 skipped.",
-    "overlay_full_suite": "38 files failed; 94 tests failed; 2,773 passed; 14 expected failures; 59 skipped. The raw suite has catalogued environment/fixture failures; compare against baseline rather than requiring all-green.",
+    "overlay_full_suite": "After review fixes: 39 files failed; 95 tests failed; 2,778 passed; 14 expected failures; 59 skipped (295 files / 2,946 tests). Pure upstream baseline: 36 files failed; 95 tests failed; 2,569 passed; 14 expected failures; 59 skipped (277 files / 2,737 tests). Failure count unchanged; baseline assertion identities require comparison before ready-for-merge.",
     "azox_contract_suite": "11 files / 190 tests passed.",
     "oauth_zed_conflict_suite": "5 files / 92 tests passed after resolving upstream Zed versus contributor ownership semantics.",
     "gateway_monitoring": "node --test tests/unit/gateway-monitoring.test.js: 2 passed.",
     "live_production": "Not run. No deployment performed.",
-    "live_claude_prefill": "Not run in this upgrade checkout."
+    "live_claude_prefill": "Not run in this upgrade checkout.",
+    "review_focused_suite": "10 files / 159 tests passed (OAuth, Portal, contributor, combo, Claude translator); gateway monitoring node --test 2 passed.",
+    "build": "npm run build and standalone asset copy passed after review fixes.",
+    "security_review": "Pending: credential/auth changes need review before merge."
   },
   "maintenance_rules": [
     "Compare this manifest and its counts with git diff --name-status against upstream_sha before release.",
