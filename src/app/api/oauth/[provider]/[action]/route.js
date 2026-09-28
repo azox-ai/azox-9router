@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { NextResponse } from "next/server";
 import {
   getProvider,
@@ -7,6 +8,7 @@ import {
   pollForToken
 } from "@/lib/oauth/providers";
 import { createProviderConnection } from "@/models";
+import { readDesktopPassToken } from "open-sse/shared/mimoAccount.js";
 import {
   startCodexProxy,
   stopCodexProxy,
@@ -17,6 +19,8 @@ import {
   stopXaiProxy,
   registerXaiSession,
   getXaiSessionStatus,
+  claimXaiSession,
+  isXaiSessionCurrent,
   clearXaiSession,
   startTraeProxy,
   stopTraeProxy,
@@ -33,17 +37,181 @@ import {
   registerZedSession,
   getZedSessionStatus,
   clearZedSession,
+  startXiaomiMimoProxy,
+  stopXiaomiMimoProxy,
+  registerXiaomiMimoSession,
+  getXiaomiMimoSessionStatus,
+  clearXiaomiMimoSession,
 } from "@/lib/oauth/utils/server";
 import { detectIdeInstalled } from "@/lib/oauth/utils/ideDetect";
 import { ZED_HOSTED_CONFIG } from "@/lib/oauth/constants/oauth";
+import { readRequestJson } from "open-sse/utils/requestBody.js";
 
-async function completeXaiManualCode(code, state) {
-  const session = state ? getXaiSessionStatus(state) : null;
-  if (!session) {
-    throw new Error("xAI OAuth session not found; restart the login flow and paste the code again");
+class OAuthConnectionCommitRejectedError extends Error {
+  constructor() {
+    super("Contribution reservation is no longer valid");
+    this.name = "OAuthConnectionCommitRejectedError";
+    this.status = 409;
   }
-  if (!code) throw new Error("Missing xAI authorization code");
+}
 
+async function persistOAuthConnection(data, internalOptions = {}) {
+  const commit = internalOptions?.commitProviderConnection;
+  const shouldCommit = internalOptions?.shouldCommit;
+  if (shouldCommit && !shouldCommit()) throw new OAuthConnectionCommitRejectedError();
+  if (typeof commit !== "function") {
+    const connection = await createProviderConnection(data, { shouldCommit });
+    if (!connection) throw new OAuthConnectionCommitRejectedError();
+    return connection;
+  }
+  const connection = await commit(data);
+  if (!connection) throw new OAuthConnectionCommitRejectedError();
+  return connection;
+}
+
+function oauthErrorStatus(error, fallback = 500) {
+  const status = Number(error?.status);
+  return Number.isInteger(status) && status >= 400 && status <= 599 ? status : fallback;
+}
+
+function oauthPublicErrorMessage(error, fallback = "OAuth request failed") {
+  const status = Number(error?.status);
+  const message = typeof error?.message === "string" ? error.message.trim() : "";
+  // Explicit 4xx statuses are assigned only to local validation/session
+  // errors. Provider transport and response-body failures are intentionally
+  // untrusted and must not cross the API boundary.
+  if (Number.isInteger(status) && status >= 400 && status < 500 && message && message.length <= 512) {
+    return message;
+  }
+  return fallback;
+}
+
+function logOAuthFailure(label, error) {
+  // An upstream error can echo the submitted code, verifier, or client
+  // secret. Keep logs useful without serializing the exception itself.
+  console.log(`${label} (${oauthErrorStatus(error)})`);
+}
+
+const PUBLIC_POLL_FAILURES = Object.freeze({
+  authorization_pending: "Authorization is pending",
+  slow_down: "Authorization is pending; retry more slowly",
+  access_denied: "Authorization was denied",
+  expired_token: "Authorization code expired",
+  invalid_request: "Authorization request is invalid",
+  request_failed: "OAuth token polling failed",
+  poll_failed: "OAuth token polling failed",
+  invalid_response: "OAuth provider returned an invalid response",
+  no_access_token: "OAuth provider did not return an access token",
+  unknown_error: "OAuth token polling failed",
+});
+
+function publicPollFailure(result) {
+  const upstreamCode = typeof result?.error === "string" ? result.error : "";
+  const error = Object.hasOwn(PUBLIC_POLL_FAILURES, upstreamCode)
+    ? upstreamCode
+    : "oauth_poll_failed";
+  return {
+    error,
+    errorDescription: PUBLIC_POLL_FAILURES[error] || "OAuth token polling failed",
+    pending: error === "authorization_pending" || error === "slow_down",
+  };
+}
+
+const START_PROXY_QUERY_PRIVATE_KEYS = [
+  "state",
+  "code_verifier",
+  "codeVerifier",
+  "token",
+  "access_token",
+  "accessToken",
+  "refresh_token",
+  "refreshToken",
+];
+const MAX_OAUTH_REQUEST_BODY_BYTES = 1024 * 1024;
+
+function validAppPort(value) {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
+async function startFixedCallbackProxy(provider, payload = {}, internalOptions = {}) {
+  const appPort = validAppPort(payload.appPort ?? payload.app_port);
+  if (!appPort) {
+    return NextResponse.json({ error: "Invalid or missing app_port" }, { status: 400 });
+  }
+
+  const state = typeof payload.state === "string" ? payload.state : null;
+  const codeVerifier = typeof (payload.codeVerifier ?? payload.code_verifier) === "string"
+    ? (payload.codeVerifier ?? payload.code_verifier)
+    : null;
+  const redirectUri = typeof (payload.redirectUri ?? payload.redirect_uri) === "string"
+    ? (payload.redirectUri ?? payload.redirect_uri)
+    : null;
+  const contributorCommit = typeof internalOptions?.commitProviderConnection === "function";
+  if (
+    contributorCommit
+    && (
+      !internalOptions.contributorReservationHash
+      || !state
+      || !codeVerifier
+      || !redirectUri
+    )
+  ) {
+    return NextResponse.json(
+      { error: "Contributor proxy requires its reservation, state, codeVerifier, and redirectUri" },
+      { status: 400 },
+    );
+  }
+
+  const result = provider === "xai"
+    ? await startXaiProxy(appPort, internalOptions.contributorReservationHash)
+    : await startCodexProxy(appPort, internalOptions.contributorReservationHash);
+  let serverSide = false;
+  if (result.success && state && codeVerifier && redirectUri) {
+    serverSide = provider === "xai"
+      ? registerXaiSession({
+          state,
+          codeVerifier,
+          redirectUri,
+          commitProviderConnection: internalOptions.commitProviderConnection,
+          contributorReservationHash: internalOptions.contributorReservationHash,
+        })
+      : registerCodexSession({
+          state,
+          codeVerifier,
+          redirectUri,
+          commitProviderConnection: internalOptions.commitProviderConnection,
+          contributorReservationHash: internalOptions.contributorReservationHash,
+        });
+  }
+  if (result.success && contributorCommit && !serverSide) {
+    if (provider === "xai") stopXaiProxy(internalOptions.contributorReservationHash);
+    else stopCodexProxy(internalOptions.contributorReservationHash);
+    return NextResponse.json(
+      { error: "Unable to register the contributor proxy session" },
+      { status: 409 },
+    );
+  }
+  return NextResponse.json({ ...result, serverSide });
+}
+
+async function completeXaiManualCode(code, state, internalOptions = {}) {
+  if (!code) throw new Error("Missing xAI authorization code");
+  const session = claimXaiSession(state, internalOptions.contributorReservationHash);
+  if (!session) {
+    const error = new Error("xAI OAuth session is missing or already being completed; restart the login flow");
+    error.status = 409;
+    throw error;
+  }
+  if (
+    typeof internalOptions?.commitProviderConnection === "function"
+    && (
+      !internalOptions.contributorReservationHash
+      || session.contributorReservationHash !== internalOptions.contributorReservationHash
+    )
+  ) {
+    throw new OAuthConnectionCommitRejectedError();
+  }
   try {
     const tokenData = await exchangeTokens(
       "xai",
@@ -52,7 +220,10 @@ async function completeXaiManualCode(code, state) {
       session.codeVerifier,
       state
     );
-    const connection = await createProviderConnection({
+    if (!isXaiSessionCurrent(state, session, internalOptions.contributorReservationHash)) {
+      throw new OAuthConnectionCommitRejectedError();
+    }
+    const connection = await persistOAuthConnection({
       provider: "xai",
       authType: "oauth",
       ...tokenData,
@@ -60,9 +231,16 @@ async function completeXaiManualCode(code, state) {
         ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString()
         : null,
       testStatus: "active",
+    }, {
+      ...internalOptions,
+      shouldCommit: () => isXaiSessionCurrent(
+        state,
+        session,
+        internalOptions.contributorReservationHash,
+      ),
     });
-    clearXaiSession(state);
-    stopXaiProxy();
+    clearXaiSession(state, session);
+    stopXaiProxy(internalOptions.contributorReservationHash, session._proxyGeneration);
     return {
       id: connection.id,
       provider: connection.provider,
@@ -70,8 +248,8 @@ async function completeXaiManualCode(code, state) {
       displayName: connection.displayName,
     };
   } catch (err) {
-    clearXaiSession(state);
-    stopXaiProxy();
+    clearXaiSession(state, session);
+    stopXaiProxy(internalOptions.contributorReservationHash, session._proxyGeneration);
     throw err;
   }
 }
@@ -83,14 +261,47 @@ async function completeXaiManualCode(code, state) {
 
 // GET /api/oauth/[provider]/authorize - Generate auth URL
 // GET /api/oauth/[provider]/device-code - Request device code (for device_code flow)
-export async function GET(request, { params }) {
+export async function GET(request, { params }, internalOptions = {}) {
   try {
     const { provider, action } = await params;
     const { searchParams } = new URL(request.url);
 
     if (action === "authorize") {
+      // Authorization endpoints are GETs and their URLs are commonly retained
+      // by browsers, reverse proxies and access logs. Secrets belong only in
+      // the bounded POST /exchange body.
+      if (searchParams.has("clientSecret") || searchParams.has("client_secret")) {
+        return NextResponse.json({ error: "OAuth client secrets are not accepted in authorize URLs" }, { status: 400 });
+      }
+
+      // Xiaomi Desktop: custom ECDH flow — generate keypair, start proxy, return authorize URL
+      if (provider === "xiaomi-mimo") {
+        const { generateKeyPair, buildAuthorizeUrl, getKeyName } = await import("@/lib/oauth/providers/xiaomi-mimo");
+        const { publicKey, privateKeyDer } = generateKeyPair();
+        const state = searchParams.get("state") || crypto.randomUUID();
+
+        // Start the callback proxy (or reuse if already running)
+        const proxyResult = await startXiaomiMimoProxy();
+        if (!proxyResult.success) {
+          return NextResponse.json({ error: `Failed to start callback server: ${proxyResult.reason}` }, { status: 500 });
+        }
+
+        // Register the session with the private key for decryption
+        registerXiaomiMimoSession({ state, privateKeyDer });
+
+        const redirectUri = proxyResult.callbackUrl;
+        const authorizeUrl = buildAuthorizeUrl(publicKey, redirectUri, getKeyName());
+
+        return NextResponse.json({
+          state,
+          authorizeUrl,
+          redirectUri,
+          port: proxyResult.port,
+        });
+      }
+
       const redirectUri = searchParams.get("redirect_uri") || "http://localhost:8080/callback";
-      // Collect provider-specific meta params (e.g. gitlab passes baseUrl, clientId, clientSecret)
+      // Collect provider-specific public metadata (e.g. GitLab baseUrl/clientId).
       const reservedParams = new Set(["redirect_uri"]);
       const meta = {};
       searchParams.forEach((value, key) => { if (!reservedParams.has(key)) meta[key] = value; });
@@ -104,42 +315,41 @@ export async function GET(request, { params }) {
     }
 
     if (action === "start-proxy") {
+      if (START_PROXY_QUERY_PRIVATE_KEYS.some((key) => searchParams.has(key))) {
+        return NextResponse.json(
+          { error: "OAuth state, verifier, and tokens are not accepted in start-proxy URLs" },
+          { status: 400 },
+        );
+      }
       // Trae/Windsurf/Zed use a dynamic-port local callback server (singleton session,
       // state is registered separately via /register-session after /authorize).
       if (provider === "trae") {
-        const result = await startTraeProxy();
+        const result = await startTraeProxy(internalOptions.contributorReservationHash);
         return NextResponse.json(result);
       }
       if (provider === "windsurf") {
-        const result = await startWindsurfProxy();
+        const result = await startWindsurfProxy(internalOptions.contributorReservationHash);
         return NextResponse.json(result);
       }
       if (provider === "zed") {
         // Prefer ZED_HOSTED_CONFIG.defaultNativeAppPort (58443) so the browser redirect
         // matches what Zed expects; falls back to a random port if it's busy.
-        const result = await startZedProxy(searchParams.get("native_app_port") || ZED_HOSTED_CONFIG.defaultNativeAppPort);
+        const result = await startZedProxy(
+          searchParams.get("native_app_port") || ZED_HOSTED_CONFIG.defaultNativeAppPort,
+          internalOptions.contributorReservationHash,
+        );
+        return NextResponse.json(result);
+      }
+      if (provider === "xiaomi-mimo") {
+        const result = await startXiaomiMimoProxy();
         return NextResponse.json(result);
       }
       if (!["codex", "xai"].includes(provider)) {
         return NextResponse.json({ error: "Proxy only supported for codex/xai/trae/windsurf/zed" }, { status: 400 });
       }
-      const appPort = searchParams.get("app_port");
-      if (!appPort) {
-        return NextResponse.json({ error: "Missing app_port" }, { status: 400 });
-      }
-      const state = searchParams.get("state");
-      const codeVerifier = searchParams.get("code_verifier");
-      const redirectUri = searchParams.get("redirect_uri");
-      const result = provider === "xai"
-        ? await startXaiProxy(Number(appPort))
-        : await startCodexProxy(Number(appPort));
-      let serverSide = false;
-      if (result.success && state && codeVerifier && redirectUri) {
-        serverSide = provider === "xai"
-          ? registerXaiSession({ state, codeVerifier, redirectUri })
-          : registerCodexSession({ state, codeVerifier, redirectUri });
-      }
-      return NextResponse.json({ ...result, serverSide });
+      return startFixedCallbackProxy(provider, {
+        appPort: searchParams.get("app_port"),
+      }, internalOptions);
     }
 
     if (action === "poll-status") {
@@ -153,10 +363,38 @@ export async function GET(request, { params }) {
       else if (provider === "zed") session = getZedSessionStatus(state);
       else if (provider === "xai") session = getXaiSessionStatus(state);
       else if (provider === "codex") session = getCodexSessionStatus(state);
-      else return NextResponse.json({ error: "Poll only supported for codex/xai/trae/windsurf/zed" }, { status: 400 });
+      else if (provider === "xiaomi-mimo") session = getXiaomiMimoSessionStatus(state);
+      else return NextResponse.json({ error: "Poll only supported for codex/xai/trae/windsurf/zed/xiaomi-mimo" }, { status: 400 });
       if (!session) return NextResponse.json({ status: "unknown" });
+      if (
+        internalOptions?.contributorReservationHash
+        && session.contributorReservationHash !== internalOptions.contributorReservationHash
+      ) {
+        return NextResponse.json(
+          { error: "Proxy session does not belong to this contribution" },
+          { status: 409 },
+        );
+      }
       if (session.status === "done" || session.status === "error") {
-        const payload = { ...session };
+        // Proxy session objects may contain an internal persistence callback.
+        // Return only the fields the browser UI consumes instead of depending
+        // on JSON.stringify to silently drop function-valued internals.
+        const payload = {
+          status: session.status,
+          ...(typeof session.connectionId === "string" ? { connectionId: session.connectionId } : {}),
+          ...(typeof session.email === "string" ? { email: session.email } : {}),
+          ...(typeof session.error === "string" ? { error: session.error } : {}),
+        };
+        if (provider === "xiaomi-mimo") {
+          // Unlike the others this does not auto-exchange server-side, so a
+          // finished session must survive until the client POSTs /exchange —
+          // that call clears it. A failed one is cleared here instead.
+          if (session.status === "error") {
+            clearXiaomiMimoSession(state);
+            stopXiaomiMimoProxy();
+          }
+          return NextResponse.json(payload);
+        }
         if (provider === "trae") clearTraeSession(state);
         else if (provider === "windsurf") clearWindsurfSession(state);
         else if (provider === "zed") clearZedSession(state);
@@ -168,12 +406,32 @@ export async function GET(request, { params }) {
     }
 
     if (action === "stop-proxy") {
-      if (provider === "trae") stopTraeProxy();
-      else if (provider === "windsurf") stopWindsurfProxy();
-      else if (provider === "zed") stopZedProxy();
-      else if (provider === "xai") stopXaiProxy();
-      else if (provider === "codex") stopCodexProxy();
-      else return NextResponse.json({ error: "Proxy only supported for codex/xai/trae/windsurf/zed" }, { status: 400 });
+      let stopped;
+      if (provider === "trae") stopped = stopTraeProxy(internalOptions.contributorReservationHash);
+      else if (provider === "windsurf") stopped = stopWindsurfProxy(internalOptions.contributorReservationHash);
+      else if (provider === "zed") stopped = stopZedProxy(internalOptions.contributorReservationHash);
+      else if (provider === "xai") stopped = stopXaiProxy(internalOptions.contributorReservationHash);
+      else if (provider === "codex") stopped = stopCodexProxy(internalOptions.contributorReservationHash);
+      else if (provider === "xiaomi-mimo") {
+        // Contributor flows never reach the Xiaomi ECDH proxy: it is a
+        // local-desktop-only login with no contributor reservation, so it has
+        // no owner key to match. Reject it there instead of stopping a proxy
+        // the contribution does not own.
+        if (internalOptions.contributorReservationHash) {
+          return NextResponse.json(
+            { error: "Proxy session does not belong to this contribution" },
+            { status: 409 },
+          );
+        }
+        stopXiaomiMimoProxy();
+      }
+      else return NextResponse.json({ error: "Proxy only supported for codex/xai/trae/windsurf/zed/xiaomi-mimo" }, { status: 400 });
+      if (stopped === false) {
+        return NextResponse.json(
+          { error: "Proxy session does not belong to this contribution" },
+          { status: 409 },
+        );
+      }
       return NextResponse.json({ success: true });
     }
 
@@ -214,6 +472,7 @@ export async function GET(request, { params }) {
         "codebuddy-cn",
         "codebuddy-intl",
         "qoder",
+        "qoder-cn",
         "grok-cli",
       ];
       let deviceData;
@@ -234,39 +493,163 @@ export async function GET(request, { params }) {
 
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   } catch (error) {
-    console.log("OAuth GET error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    logOAuthFailure("OAuth GET error", error);
+    return NextResponse.json(
+      { error: oauthPublicErrorMessage(error) },
+      { status: oauthErrorStatus(error) },
+    );
   }
 }
 
 // POST /api/oauth/[provider]/exchange - Exchange code for tokens and save
 // POST /api/oauth/[provider]/poll - Poll for token (device_code flow)
-export async function POST(request, { params }) {
+export async function POST(request, { params }, internalOptions = {}) {
   try {
     const { provider, action } = await params;
     let body;
     try {
-      body = await request.json();
-    } catch {
+      body = await readRequestJson(request, {
+        maxBytes: MAX_OAUTH_REQUEST_BODY_BYTES,
+        label: "OAuth request body",
+        requireBody: true,
+      });
+    } catch (error) {
+      const status = Number(error?.status);
+      if ([408, 413, 499].includes(status)) {
+        return NextResponse.json({ error: error.message }, { status });
+      }
       return NextResponse.json({ error: "Invalid or empty request body" }, { status: 400 });
     }
 
-    if (action === "register-session") {
-      // Register proxy session out of URL query (state) + body (codeVerifier).
-      // Zed's codeVerifier encodes the RSA private key — must stay out of URL/logs.
+    if (action === "start-proxy") {
       const searchParams = new URL(request.url).searchParams;
-      const state = searchParams.get("state") || body?.state;
+      if (START_PROXY_QUERY_PRIVATE_KEYS.some((key) => searchParams.has(key))) {
+        return NextResponse.json(
+          { error: "OAuth state, verifier, and tokens are not accepted in start-proxy URLs" },
+          { status: 400 },
+        );
+      }
+      if (!["codex", "xai"].includes(provider)) {
+        return NextResponse.json(
+          { error: "POST start-proxy is only supported for codex/xai" },
+          { status: 400 },
+        );
+      }
+      return startFixedCallbackProxy(provider, body, internalOptions);
+    }
+
+    if (action === "register-session") {
+      // Session state and Zed's RSA private-key verifier must stay in the POST
+      // body so browser, reverse-proxy, and access logs never retain them.
+      const searchParams = new URL(request.url).searchParams;
+      if (START_PROXY_QUERY_PRIVATE_KEYS.some((key) => searchParams.has(key))) {
+        return NextResponse.json(
+          { error: "OAuth state, verifier, and tokens are not accepted in register-session URLs" },
+          { status: 400 },
+        );
+      }
+      const state = body?.state;
       if (!state) return NextResponse.json({ error: "Missing state" }, { status: 400 });
+      if (
+        typeof internalOptions?.commitProviderConnection === "function"
+        && !internalOptions.contributorReservationHash
+      ) {
+        return NextResponse.json(
+          { error: "Missing contributor proxy reservation" },
+          { status: 409 },
+        );
+      }
       let ok = false;
-      if (provider === "trae") ok = registerTraeSession({ state });
-      else if (provider === "windsurf") ok = registerWindsurfSession({ state });
-      else if (provider === "zed") ok = registerZedSession({ state, codeVerifier: body?.codeVerifier });
+      if (provider === "trae") ok = registerTraeSession({
+        state,
+        commitProviderConnection: internalOptions.commitProviderConnection,
+        contributorReservationHash: internalOptions.contributorReservationHash,
+      });
+      else if (provider === "windsurf") ok = registerWindsurfSession({
+        state,
+        commitProviderConnection: internalOptions.commitProviderConnection,
+        contributorReservationHash: internalOptions.contributorReservationHash,
+      });
+      else if (provider === "zed") ok = registerZedSession({
+        state,
+        codeVerifier: body?.codeVerifier,
+        commitProviderConnection: internalOptions.commitProviderConnection,
+        contributorReservationHash: internalOptions.contributorReservationHash,
+        systemId: body?.systemId,
+      });
       else return NextResponse.json({ error: "register-session only supported for trae/windsurf/zed" }, { status: 400 });
+      if (!ok && typeof internalOptions?.commitProviderConnection === "function") {
+        if (provider === "trae") stopTraeProxy(internalOptions.contributorReservationHash);
+        else if (provider === "windsurf") stopWindsurfProxy(internalOptions.contributorReservationHash);
+        else stopZedProxy(internalOptions.contributorReservationHash);
+      }
       return NextResponse.json({ success: ok });
     }
 
     if (action === "exchange") {
-      const { code, redirectUri, codeVerifier, state, meta } = body;
+      const { code, redirectUri, codeVerifier, state, meta, systemId } = body;
+
+      // Xiaomi MiMo: no token exchange needed — the callback already decrypted the sk.
+      // Just read the session result and create the connection.
+      if (provider === "xiaomi-mimo") {
+        if (!state) {
+          return NextResponse.json({ error: "Missing state" }, { status: 400 });
+        }
+        const session = getXiaomiMimoSessionStatus(state);
+        if (!session || session.status !== "done" || !session.result) {
+          return NextResponse.json(
+            { error: session?.error || "OAuth session not completed. Please restart the login flow." },
+            { status: 400 },
+          );
+        }
+        const { uid, accessToken, baseUrl } = session.result;
+
+        // Desktop-exclusive Preview models authenticate with the account-session
+        // passToken, which only lives in MiMo Desktop's cookie store — attach it
+        // to the connection so those models work right after OAuth.
+        let passToken = null;
+        try {
+          passToken = await readDesktopPassToken();
+        } catch {
+          // Desktop not installed / cookie DB locked — preview models stay unavailable.
+        }
+
+        try {
+          const connection = await createProviderConnection({
+            provider: "xiaomi-mimo",
+            authType: "oauth",
+            accessToken,
+            refreshToken: null,
+            expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+            email: uid ? `${uid}@xiaomi` : null,
+            displayName: uid ? `Xiaomi ${uid}` : "Xiaomi MiMo",
+            providerSpecificData: {
+              uid: uid || null,
+              baseUrl: baseUrl || "https://api.xiaomimimo.com/v1",
+              authMethod: "oauth",
+              mimoPassToken: passToken?.passToken || null,
+              mimoUserId: passToken?.userId || null,
+              mimoCUserId: passToken?.cUserId || null,
+            },
+            testStatus: "active",
+          });
+          clearXiaomiMimoSession(state);
+          stopXiaomiMimoProxy();
+          return NextResponse.json({
+            success: true,
+            connection: {
+              id: connection.id,
+              provider: connection.provider,
+              email: connection.email,
+              displayName: connection.displayName,
+            },
+          });
+        } catch (err) {
+          clearXiaomiMimoSession(state);
+          stopXiaomiMimoProxy();
+          return NextResponse.json({ error: err.message }, { status: 500 });
+        }
+      }
 
       // Trae/Windsurf: code is either a raw callback URL or a pasted token.
       // exchangeTokens() handles both paths; no PKCE, skip codex JWT extraction.
@@ -277,7 +660,7 @@ export async function POST(request, { params }) {
         }
         try {
           const tokenData = await exchangeTokens(provider, token, null, null, state);
-          const connection = await createProviderConnection({
+          const connection = await persistOAuthConnection({
             provider,
             authType: provider === "windsurf" ? "api_key" : "oauth",
             ...tokenData,
@@ -285,7 +668,7 @@ export async function POST(request, { params }) {
               ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString()
               : null,
             testStatus: "active",
-          });
+          }, internalOptions);
           return NextResponse.json({
             success: true,
             connection: {
@@ -296,7 +679,11 @@ export async function POST(request, { params }) {
             }
           });
         } catch (err) {
-          return NextResponse.json({ error: err.message }, { status: 500 });
+          logOAuthFailure("OAuth exchange error", err);
+          return NextResponse.json(
+            { error: oauthPublicErrorMessage(err) },
+            { status: oauthErrorStatus(err) },
+          );
         }
       }
 
@@ -322,14 +709,14 @@ export async function POST(request, { params }) {
         if (accountId) providerSpecificData.chatgptAccountId = accountId;
         if (planType) providerSpecificData.chatgptPlanType = planType;
 
-        const connection = await createProviderConnection({
+        const connection = await persistOAuthConnection({
           provider,
           authType: "access_token",
           accessToken: code,
           email: email || null,
           providerSpecificData,
           testStatus: "active",
-        });
+        }, internalOptions);
 
         return NextResponse.json({
           success: true,
@@ -348,11 +735,16 @@ export async function POST(request, { params }) {
         return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
       }
 
-      // Exchange code for tokens (meta carries provider-specific params, e.g. gitlab clientId/baseUrl)
-      const tokenData = await exchangeTokens(provider, code, redirectUri, codeVerifier, state, meta);
+      // Exchange code for tokens (meta carries provider-specific params, e.g. gitlab clientId/baseUrl).
+      // systemId (Zed) is merged into meta so the login attempt's own id is
+      // used instead of a freshly prepared one. Ignored by other providers.
+      const tokenData = await exchangeTokens(provider, code, redirectUri, codeVerifier, state, {
+        ...(meta || {}),
+        ...(systemId ? { systemId } : {}),
+      });
 
       // Save to database
-      const connection = await createProviderConnection({
+      const connection = await persistOAuthConnection({
         provider,
         authType: "oauth",
         ...tokenData,
@@ -360,7 +752,7 @@ export async function POST(request, { params }) {
           ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString() 
           : null,
         testStatus: "active",
-      });
+      }, internalOptions);
 
       return NextResponse.json({ 
         success: true, 
@@ -389,7 +781,7 @@ export async function POST(request, { params }) {
       } else if (provider === "kiro") {
         // Kiro needs extraData (clientId, clientSecret) from device code response
         result = await pollForToken(provider, deviceCode, null, extraData);
-      } else if (provider === "qoder") {
+      } else if (provider === "qoder" || provider === "qoder-cn") {
         // Qoder needs both the PKCE verifier (codeVerifier) and the machineId
         // captured at device-code time (extraData._qoderMachineId) so
         // mapTokens can persist it for COSY signing.
@@ -408,7 +800,7 @@ export async function POST(request, { params }) {
       if (result.success) {
         // Save to database (legacy kimi-coding OAuth → dual-auth kimi)
         const providerId = provider === "kimi-coding" ? "kimi" : provider;
-        const connection = await createProviderConnection({
+        const connection = await persistOAuthConnection({
           provider: providerId,
           authType: "oauth",
           ...result.tokens,
@@ -416,7 +808,7 @@ export async function POST(request, { params }) {
             ? new Date(Date.now() + result.tokens.expiresIn * 1000).toISOString() 
             : null,
           testStatus: "active",
-        });
+        }, internalOptions);
 
         return NextResponse.json({ 
           success: true, 
@@ -427,14 +819,13 @@ export async function POST(request, { params }) {
         });
       }
 
-      // Still pending or error - don't create connection for pending states
-      const isPending = result.pending || result.error === "authorization_pending" || result.error === "slow_down";
-      
+      // Still pending or error - don't create a connection. Provider payloads
+      // may reflect the submitted device code or client secret, so return only
+      // stable public codes and descriptions.
+      const publicFailure = publicPollFailure(result);
       return NextResponse.json({
         success: false,
-        error: result.error,
-        errorDescription: result.errorDescription,
-        pending: isPending,
+        ...publicFailure,
       });
     }
 
@@ -443,13 +834,20 @@ export async function POST(request, { params }) {
         return NextResponse.json({ error: "Manual code only supported for xai" }, { status: 400 });
       }
       const { code, state } = body;
-      const connection = await completeXaiManualCode(String(code || "").trim(), String(state || "").trim());
+      const connection = await completeXaiManualCode(
+        String(code || "").trim(),
+        String(state || "").trim(),
+        internalOptions,
+      );
       return NextResponse.json({ success: true, connection });
     }
 
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   } catch (error) {
-    console.log("OAuth POST error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    logOAuthFailure("OAuth POST error", error);
+    return NextResponse.json(
+      { error: oauthPublicErrorMessage(error) },
+      { status: oauthErrorStatus(error) },
+    );
   }
 }

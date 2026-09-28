@@ -8,6 +8,9 @@ import { isValidClaudeSignature } from "../../utils/claudeSignature.js";
 import { PROVIDERS } from "../../providers/index.js";
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
 import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
+import { CLAUDE_SYSTEM_PROMPT } from "../../config/appConstants.js";
+import { applyAssistantPrefillPolicy } from "../concerns/assistantPrefillPolicy.js";
+import { ToolCompatibilityError } from "../concerns/hostedToolPolicy.js";
 
 const CACHE_CONTROL_5M = { type: "ephemeral" };
 const CACHE_CONTROL_1H = { type: "ephemeral", ttl: "1h" };
@@ -27,9 +30,19 @@ export function lastCacheableToolIndex(tools) {
 // Check if message has valid non-empty content
 export function hasValidContent(msg) {
   if (typeof msg.content === "string" && msg.content.trim()) return true;
+  if (msg.content && typeof msg.content === "object" && !Array.isArray(msg.content)) {
+    const block = msg.content;
+    return !!((block.type === CLAUDE_BLOCK.TEXT && block.text?.trim()) ||
+      block.type === CLAUDE_BLOCK.TOOL_USE ||
+      block.type === CLAUDE_BLOCK.TOOL_RESULT ||
+      block.type === CLAUDE_BLOCK.IMAGE ||
+      block.type === CLAUDE_BLOCK.DOCUMENT);
+  }
   if (Array.isArray(msg.content)) {
     return msg.content.some(block =>
       (block.type === CLAUDE_BLOCK.TEXT && block.text?.trim()) ||
+      block.type === CLAUDE_BLOCK.THINKING ||
+      block.type === CLAUDE_BLOCK.REDACTED_THINKING ||
       block.type === CLAUDE_BLOCK.TOOL_USE ||
       block.type === CLAUDE_BLOCK.TOOL_RESULT ||
       block.type === CLAUDE_BLOCK.IMAGE ||
@@ -37,6 +50,60 @@ export function hasValidContent(msg) {
     );
   }
   return false;
+}
+// Content may arrive as a single content block object (spec allows string | array;
+// some clients send the bare object). Wrap it as a one-block array and strip any
+// client-placed cache_control: a bare-object marker must never survive
+// normalization, on any path, guard or no guard.
+function normalizeMessageContent(msg) {
+  const c = msg?.content;
+  if (c && typeof c === "object" && !Array.isArray(c)) {
+    delete c.cache_control;
+    msg.content = [c];
+  }
+  return msg;
+}
+
+// Total blocks carrying cache_control across system, tools, and messages — the
+// upstream Messages API allows at most 4 markers per request.
+function countCacheControlBlocks(body) {
+  let n = 0;
+  if (Array.isArray(body?.system)) for (const b of body.system) if (b?.cache_control) n++;
+  if (Array.isArray(body?.tools)) for (const t of body.tools) if (t?.cache_control) n++;
+  if (Array.isArray(body?.messages)) {
+    for (const m of body.messages) {
+      if (Array.isArray(m?.content)) {
+        for (const b of m.content) if (b?.cache_control) n++;
+      } else if (m?.content && typeof m.content === "object" && m.content.cache_control) n++;
+    }
+  }
+  return n;
+}
+// Trim every marker past the 4-marker budget. The head anchors (last system
+// block, last cacheable tool) are held; the remaining slots go to the tail-most
+// of the other markers in document order. A plain "keep the last 4 in document
+// order" rule would drop the head anchors first — they lead document order, yet
+// they are exactly what re-anchoring exists to pin.
+function capCacheControlBlocks(body) {
+  const isHead = (b) => {
+    const sys = Array.isArray(body?.system) ? body.system : [];
+    if (sys.length && sys[sys.length - 1] === b) return true;
+    const tools = Array.isArray(body?.tools) ? body.tools : [];
+    const lastTool = lastCacheableToolIndex(tools);
+    return lastTool >= 0 && tools[lastTool] === b;
+  };
+  const marked = [];
+  if (Array.isArray(body?.system)) for (const b of body.system) if (b?.cache_control) marked.push(b);
+  if (Array.isArray(body?.tools)) for (const t of body.tools) if (t?.cache_control) marked.push(t);
+  if (Array.isArray(body?.messages)) {
+    for (const m of body.messages) {
+      if (Array.isArray(m?.content)) for (const b of m.content) if (b?.cache_control) marked.push(b);
+    }
+  }
+  const head = marked.filter(isHead);
+  const rest = marked.filter(b => !isHead(b));
+  const keep = Math.max(0, 4 - head.length);
+  for (const b of rest.slice(0, Math.max(0, rest.length - keep))) delete b.cache_control;
 }
 
 // Fix tool_use/tool_result ordering for Claude API
@@ -136,9 +203,11 @@ function hasForeignServerToolUseId(block) {
 // Newer Cowork/Claude Code clients emit beta-only shapes that OAuth endpoints reject:
 // 1. thinking.type "adaptive" → unsupported on Haiku
 // 2. output_config.effort → unsupported on Haiku
-// 3. role "system" messages (mid-conversation-system beta) → only top-level system is allowed
-// 4. server_tool_use blocks carrying a foreign (non-srvtoolu_) id → rejected outright
-export function normalizeClaudePassthrough(body, model = "") {
+// 3. bare content-block objects (content: {block} instead of [{block}]) → wrapped first
+// 4. role "system" messages (mid-conversation-system beta) → only top-level system is allowed
+// 5. server_tool_use blocks carrying a foreign (non-srvtoolu_) id → rejected outright
+// rawHeaders carries the AZOX assistant-prefill opt-in header into the policy below.
+export function normalizeClaudePassthrough(body, model = "", rawHeaders = null) {
   if (!body || typeof body !== "object") return body;
 
   // 1. Downgrade adaptive thinking for models that don't support it
@@ -152,7 +221,15 @@ export function normalizeClaudePassthrough(body, model = "") {
     if (Object.keys(body.output_config).length === 0) delete body.output_config;
   }
 
-  // 2. Fold mid-conversation system messages into the neighbouring turn.
+  // 3. Wrap bare content-block objects as one-element arrays before folding.
+  // Some clients send content: {block} instead of content: [{block}]; the
+  // mid-conversation-system fold below assumes the array shape, so it must
+  // run first — a bare-object neighbor would otherwise be zeroed to [].
+  if (Array.isArray(body.messages)) {
+    for (const msg of body.messages) normalizeMessageContent(msg);
+  }
+
+  // 4. Fold mid-conversation system messages into the neighbouring turn.
   // Hoisting them into body.system would insert volatile content (token counters,
   // reminders) ahead of the whole conversation and invalidate the prefix cache on
   // every request. Folding in place keeps the cached prefix stable.
@@ -186,7 +263,7 @@ export function normalizeClaudePassthrough(body, model = "") {
     body.messages = messages;
   }
 
-  // 3. Drop thinking blocks whose signature is not Claude's (combo mixes models,
+  // 5. Drop thinking blocks whose signature is not Claude's (combo mixes models,
   // so foreign signatures leak into history and Anthropic rejects them).
   const thinkingEnabled = body.thinking?.type === "enabled";
   const droppedServerToolUseIds = new Set();
@@ -198,7 +275,7 @@ export function normalizeClaudePassthrough(body, model = "") {
       const kept = [];
       for (const block of msg.content) {
         if (block.type === CLAUDE_BLOCK.THINKING || block.type === CLAUDE_BLOCK.REDACTED_THINKING) {
-          if (isValidClaudeSignature(block.signature)) {
+          if (block.type === CLAUDE_BLOCK.REDACTED_THINKING || isValidClaudeSignature(block.signature)) {
             hasKeptThinking = true;
             kept.push(block);
           }
@@ -233,7 +310,7 @@ export function normalizeClaudePassthrough(body, model = "") {
     }
   }
 
-  // 5. Drop empty text blocks and any message left with no content at all.
+  // 6. Drop empty text blocks and any message left with no content at all.
   // Anthropic rejects `messages.N.content` blocks with empty text (400
   // "text content blocks must be non-empty"); a message whose blocks were all
   // stripped above must be dropped, not padded with an empty placeholder.
@@ -246,6 +323,8 @@ export function normalizeClaudePassthrough(body, model = "") {
       return msg.content.length > 0;
     });
   }
+
+  applyAssistantPrefillPolicy(body, rawHeaders);
 
   return body;
 }
@@ -271,7 +350,22 @@ function markLastCacheableBlock(msg) {
 // (normalize, tool dedupe, token savers) — otherwise the anchor drifts off the tail.
 export function anchorClaudeCache(body) {
   if (!body || typeof body !== "object") return body;
+  if (Array.isArray(body.messages)) {
+    for (const msg of body.messages) normalizeMessageContent(msg);
+  }
+  // Invalid markers first, whatever the budget: Anthropic rejects a tool that
+  // carries BOTH defer_loading and cache_control (#3567). The re-anchor path
+  // below strips them anyway; the over-budget early return used to forward
+  // them untouched.
+  if (Array.isArray(body.tools)) {
+    for (const t of body.tools) {
+      if (t?.defer_loading === true) delete t.cache_control;
+    }
+  }
 
+  // Head anchors first, before any budget guard: the 1h TTL on system/tools is
+  // the point of re-anchoring, and skipping it because the client spent its
+  // budget would silently downgrade a cache hit to the 5m default.
   if (Array.isArray(body.system)) {
     const last = body.system.length - 1;
     body.system.forEach((block, i) => {
@@ -287,6 +381,15 @@ export function anchorClaudeCache(body) {
       if (i === last) tool.cache_control = { ...CACHE_CONTROL_1H };
       else delete tool.cache_control;
     });
+  }
+
+  // Budget guard AFTER the head anchors: with the last system block and last
+  // tool pinned, at most 2 slots remain. At >= 4 markers the client has spent
+  // the rest of the budget and every remaining marker is itself a valid
+  // breakpoint — re-anchoring the tail could only exceed 4, so trim instead.
+  if (countCacheControlBlocks(body) >= 4) {
+    capCacheControlBlocks(body);
+    return body;
   }
 
   if (Array.isArray(body.messages)) {
@@ -320,7 +423,45 @@ export function anchorClaudeCache(body) {
 // - Add thinking block for Anthropic endpoint (provider === "claude")
 // - Fix tool_use/tool_result ordering
 // - Apply cloaking (billing header + fake user ID) for OAuth tokens
+export function hoistToolResultImages(body) {
+  if (!Array.isArray(body?.messages)) return body;
+  let touched = false;
+  const messages = body.messages.map((msg) => {
+    if (msg?.role !== ROLE.USER || !Array.isArray(msg.content)) return msg;
+    const hoisted = [];
+    const content = msg.content.map((block) => {
+      if (block?.type !== CLAUDE_BLOCK.TOOL_RESULT || !Array.isArray(block.content)) return block;
+      const images = block.content.filter((c) => c?.type === CLAUDE_BLOCK.IMAGE);
+      if (!images.length) return block;
+      const rest = block.content.filter((c) => c?.type !== CLAUDE_BLOCK.IMAGE);
+      hoisted.push({ type: CLAUDE_BLOCK.TEXT, text: `[Image from tool result ${block.tool_use_id}]` }, ...images);
+      return { ...block, content: rest.length ? rest : [{ type: CLAUDE_BLOCK.TEXT, text: "(image attached below)" }] };
+    });
+    if (!hoisted.length) return msg;
+    touched = true;
+    // tool_result blocks must lead a user message; the hoisted image follows them.
+    return { ...msg, content: [...content, ...hoisted] };
+  });
+  return touched ? { ...body, messages } : body;
+}
+
 export function prepareClaudeRequest(body, provider = null, apiKey = null, connectionId = null, rawHeaders = null, sessionId = null) {
+  // The Claude Code identity is specific to the official Claude transport. It
+  // must not leak into unrelated Anthropic-compatible providers.
+  if (provider === "claude") {
+    const promptBlock = { type: CLAUDE_BLOCK.TEXT, text: CLAUDE_SYSTEM_PROMPT };
+    if (Array.isArray(body.system)) {
+      const alreadyPresent = body.system.some(block => block?.text === CLAUDE_SYSTEM_PROMPT);
+      if (!alreadyPresent) body.system = [promptBlock, ...body.system];
+    } else if (typeof body.system === "string" && body.system) {
+      if (!body.system.includes(CLAUDE_SYSTEM_PROMPT)) {
+        body.system = [promptBlock, { type: CLAUDE_BLOCK.TEXT, text: body.system }];
+      }
+    } else {
+      body.system = [promptBlock];
+    }
+  }
+
   // quirk: MiniMax's Claude-compatible endpoint rejects Anthropic's output_config (400 invalid params)
   if (PROVIDERS[provider]?.quirks?.dropOutputConfig) {
     delete body.output_config;
@@ -368,6 +509,7 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     // Pass 1: remove cache_control + filter empty messages
     for (let i = 0; i < len; i++) {
       const msg = body.messages[i];
+      normalizeMessageContent(msg);
 
       // Remove cache_control from content blocks
       if (Array.isArray(msg.content)) {
@@ -377,7 +519,7 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
       }
 
       // Keep final assistant even if empty, otherwise check valid content
-      const isFinalAssistant = i === len - 1 && msg.role === "assistant";
+      const isFinalAssistant = i === len - 1 && msg.role === ROLE.ASSISTANT;
       if (isFinalAssistant || hasValidContent(msg)) {
         filtered.push(msg);
       }
@@ -388,10 +530,12 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     filtered = fixToolUseOrdering(filtered);
 
     body.messages = filtered;
+    applyAssistantPrefillPolicy(body, rawHeaders);
+    filtered = body.messages;
 
     // Check if thinking is enabled AND last message is from user
     const lastMessage = filtered[filtered.length - 1];
-    const lastMessageIsUser = lastMessage?.role === "user";
+    const lastMessageIsUser = lastMessage?.role === ROLE.USER;
     const thinkingEnabled = body.thinking?.type === "enabled" && lastMessageIsUser;
 
     // Pass 2 (reverse): add cache_control to last assistant + handle thinking for Anthropic
@@ -399,7 +543,7 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     for (let i = filtered.length - 1; i >= 0; i--) {
       const msg = filtered[i];
 
-      if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      if (msg.role === ROLE.ASSISTANT && Array.isArray(msg.content)) {
         // Add cache_control to last non-thinking block of first (from end) assistant with content
         // thinking/redacted_thinking blocks do not support cache_control
         if (!lastAssistantProcessed && msg.content.length > 0) {
@@ -423,12 +567,18 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
           // DeepSeek: keep existing thinking as-is; add an unsigned placeholder only if missing.
           const isClaudeNative = provider === "claude";
           const isDeepSeek = provider === "deepseek";
+          const hadThinking = msg.content.some(block =>
+            block.type === CLAUDE_BLOCK.THINKING || block.type === CLAUDE_BLOCK.REDACTED_THINKING);
           const kept = [];
           for (const block of msg.content) {
             const isThinking = block.type === CLAUDE_BLOCK.THINKING || block.type === CLAUDE_BLOCK.REDACTED_THINKING;
             if (isThinking) {
               if (isClaudeNative) {
-                if (isValidClaudeSignature(block.signature)) {
+                // redacted_thinking is opaque server-owned history. It carries
+                // `data`, not a replayable thinking signature, and Anthropic
+                // accepts it unchanged. Do not treat it as an unsigned
+                // thinking block or prefill policy's preservation is undone.
+                if (block.type === CLAUDE_BLOCK.REDACTED_THINKING || isValidClaudeSignature(block.signature)) {
                   hasKeptThinking = true;
                   kept.push(block);
                 }
@@ -446,6 +596,9 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
             kept.push(block);
           }
           msg.content = kept;
+          if (isClaudeNative && hadThinking && kept.length === 0) {
+            throw new ToolCompatibilityError("Claude native cannot preserve unsigned reasoning-only assistant history");
+          }
 
           // Add thinking block if thinking enabled + has tool_use but no thinking
           if (thinkingEnabled && !hasKeptThinking && hasToolUse) {
@@ -457,12 +610,26 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
   }
 
   // 3. Tools: filter built-in tools for non-Anthropic providers, then handle cache_control
+  const requestedToolChoice = body.tool_choice;
   if (body.tools && Array.isArray(body.tools)) {
     // Strip built-in tools (e.g. web_search_20250305) and normalize to Anthropic-native shape
     // (drop `type` field, fold `function.{name,description,parameters}`) for non-Anthropic providers
     if (provider !== "claude") {
+      // Provider-specific whitelist of Anthropic tool `type` values that the
+      // upstream actually accepts. When the provider declares it
+      // (e.g. DeepSeek — only web_search_*), keep only listed types; otherwise
+      // keep the prior behaviour of dropping every non-function tool, which is
+      // correct for OpenAI-compatible targets reached through this Claude-format
+      // pass (their tools get normalized below to function-style).
+      const supportedTypes = PROVIDERS[provider]?.quirks?.claudeSupportedToolTypes;
+      const hasWhitelist = Array.isArray(supportedTypes);
       body.tools = body.tools
-        .filter(tool => !tool.type || tool.type === "function")
+        .filter(tool => {
+          const t = tool?.type;
+          if (!t || t === "function") return true;
+          if (hasWhitelist) return supportedTypes.includes(t);
+          return false;
+        })
         .map(tool => {
           if (tool.function) {
             return {
@@ -471,6 +638,13 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
               input_schema: tool.function.parameters,
             };
           }
+          // When the provider declared a supportedToolTypes whitelist, keep
+          // the surviving tools' `type` field intact — the upstream
+          // Anthropic-compatible endpoint (e.g. DeepSeek) requires it to
+          // route built-ins like web_search_* correctly. Without a
+          // whitelist, preserve prior behaviour and strip `type` so the
+          // tool is normalized to plain Anthropic shape.
+          if (hasWhitelist) return tool;
           const { type, ...rest } = tool;
           return rest;
         });
@@ -490,6 +664,21 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
       delete body.tools;
       delete body.tool_choice;
     }
+  }
+
+  // Provider-specific filtering is the last tool boundary. A forced/required
+  // choice cannot disappear with a hosted declaration or point to another tool.
+  if ((requestedToolChoice?.type === "tool" && !body.tools?.some(tool => tool.name === requestedToolChoice.name)) ||
+      (requestedToolChoice?.type === "any" && !body.tools?.length)) {
+    throw new ToolCompatibilityError("Claude target removed a required or selected tool");
+  }
+
+  // Anthropic itself reads images inside tool_result; other Anthropic-compatible
+  // endpoints (OpenCode Go, Kimi, DeepSeek, GLM, MiniMax) accept image blocks
+  // only as user content and silently drop them inside a tool result. Move a
+  // tool's screenshot out of the result and into the same user turn.
+  if (provider !== "claude" && !provider?.startsWith("anthropic-compatible")) {
+    body = hoistToolResultImages(body);
   }
 
   // Apply cloaking for OAuth tokens (billing header + fake user ID)

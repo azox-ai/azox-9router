@@ -114,7 +114,7 @@ export async function handleChat(request, clientRawRequest = null) {
       return handleFusionChat({
         body,
         models: comboModels,
-        handleSingleModel: (b, m, isPanel) => {
+        handleSingleModel: (b, m, isPanel, panelSignal) => {
           let cleanRawReq = clientRawRequest;
           if (isPanel && clientRawRequest) {
             const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
@@ -125,12 +125,13 @@ export async function handleChat(request, clientRawRequest = null) {
             ...monitoring,
             combo: modelStr,
             attempt: fusionAttempt,
-          });
+          }, panelSignal || request?.signal);
         },
         log,
         comboName: modelStr,
         judgeModel: comboStrategies[modelStr]?.judgeModel,
         tuning: comboStrategies[modelStr]?.fusionTuning,
+        signal: request?.signal,
       });
     }
 
@@ -144,13 +145,14 @@ export async function handleChat(request, clientRawRequest = null) {
           handleSingleModelChat(b, m, clientRawRequest, request, apiKey, {
             ...monitoring,
             ...comboAttempt,
-          }),
+          }, request?.signal),
         adapterAdded
       ),
       log,
       comboName: modelStr,
       comboStrategy,
-      comboStickyLimit
+      comboStickyLimit,
+      signal: request?.signal
     });
   }
 
@@ -168,16 +170,17 @@ export async function handleChat(request, clientRawRequest = null) {
           handleSingleModelChat(b, m, clientRawRequest, request, apiKey, {
             ...monitoring,
             ...comboAttempt,
-          }),
+          }, request?.signal),
         adapterAdded
       ),
       log,
       comboName: modelStr,
-      comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
+      comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings),
+      signal: request?.signal
     });
   }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, monitoring);
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, monitoring, request?.signal);
 }
 
 /**
@@ -189,7 +192,8 @@ async function handleSingleModelChat(
   clientRawRequest = null,
   request = null,
   apiKey = null,
-  monitoring = null
+  monitoring = null,
+  signal = null
 ) {
   const modelInfo = await getModelInfo(modelStr);
 
@@ -212,7 +216,7 @@ async function handleSingleModelChat(
         return handleFusionChat({
           body,
           models: comboModels,
-          handleSingleModel: (b, m, isPanel) => {
+          handleSingleModel: (b, m, isPanel, panelSignal) => {
             let cleanRawReq = clientRawRequest;
             if (isPanel && clientRawRequest) {
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
@@ -223,12 +227,13 @@ async function handleSingleModelChat(
               ...monitoring,
               combo: modelStr,
               attempt: fusionAttempt,
-            });
+            }, panelSignal || request?.signal);
           },
           log,
           comboName: modelStr,
           judgeModel: comboStrategies[modelStr]?.judgeModel,
           tuning: comboStrategies[modelStr]?.fusionTuning,
+          signal: signal || request?.signal,
         });
       }
 
@@ -242,13 +247,14 @@ async function handleSingleModelChat(
             handleSingleModelChat(b, m, clientRawRequest, request, apiKey, {
               ...monitoring,
               ...comboAttempt,
-            }),
+            }, signal || request?.signal),
           adapterAdded
         ),
         log,
         comboName: modelStr,
         comboStrategy,
-        comboStickyLimit
+        comboStickyLimit,
+        signal: signal || request?.signal
       });
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });
@@ -333,6 +339,7 @@ async function handleSingleModelChat(
         pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
         onPxpipeEvent: appendPxpipeEvent,
         providerThinking,
+        signal: signal || request?.signal,
         // Detect source format by endpoint + body
         sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
         onCredentialsRefreshed: async (newCreds) => {
