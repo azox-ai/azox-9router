@@ -27,9 +27,16 @@ describe("Portal credential identity and monotonic version", () => {
       name TEXT, email TEXT, priority INTEGER, isActive INTEGER DEFAULT 1,
       data TEXT NOT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
     );`);
+    fixture.adapter.exec(`CREATE TABLE kv (
+      scope TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+      PRIMARY KEY (scope, key)
+    );`);
   });
 
-  beforeEach(() => fixture.adapter.exec("DELETE FROM providerConnections;"));
+  beforeEach(() => {
+    fixture.adapter.exec("DELETE FROM providerConnections;");
+    fixture.adapter.exec("DELETE FROM kv;");
+  });
   afterAll(() => {
     fixture.adapter?.close();
     if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
@@ -89,6 +96,51 @@ describe("Portal credential identity and monotonic version", () => {
       accessToken: "portal-access", testStatus: "active", errorCode: null, lastError: null,
       providerSpecificData: { portalExternalId: "external-1", portalTokenVersion: 2 },
     });
+  });
+
+  it("rejects delayed writes after deletion and keeps a new Portal ID usable", async () => {
+    const created = await repo.upsertPortalManagedConnection(
+      "portal-1", 7, "claude", () => portalValues("portal-1", "old-token", 7),
+    );
+    expect(await repo.deletePortalManagedConnection("portal-1")).toBe(true);
+    expect(await repo.getProviderConnectionById(created.connection.id)).toBeNull();
+
+    for (const version of [7, 8]) {
+      const replay = await repo.upsertPortalManagedConnection(
+        "portal-1", version, "claude", () => portalValues("portal-1", "replayed-token", version),
+      );
+      expect(replay.status).toBe("deleted");
+    }
+    expect(await repo.getProviderConnections({ provider: "claude" })).toHaveLength(0);
+    expect(await repo.deletePortalManagedConnection("portal-1")).toBe(false);
+
+    const replacement = await repo.upsertPortalManagedConnection(
+      "portal-2", 1, "claude", () => portalValues("portal-2", "new-token", 1),
+    );
+    expect(replacement.status).toBe("created");
+    expect(replacement.connection.accessToken).toBe("new-token");
+  });
+
+  it("tombstones an ID even if DELETE beats the first PUT", async () => {
+    expect(await repo.deletePortalManagedConnection("portal-early")).toBe(false);
+    const replay = await repo.upsertPortalManagedConnection(
+      "portal-early", 1, "claude", () => portalValues("portal-early", "late-token", 1),
+    );
+    expect(replay.status).toBe("deleted");
+    expect(await repo.getProviderConnections({ provider: "claude" })).toHaveLength(0);
+  });
+
+  it("retains the deletion tombstone across database reopening", async () => {
+    await repo.upsertPortalManagedConnection(
+      "portal-3", 2, "codex", () => ({ ...portalValues("portal-3", "token", 2), provider: "codex" }),
+    );
+    expect(await repo.deletePortalManagedConnection("portal-3")).toBe(true);
+    fixture.adapter.close();
+    fixture.adapter = await createSqlJsAdapter(path.join(tempDir, "fixture.sqlite"));
+    const replay = await repo.upsertPortalManagedConnection(
+      "portal-3", 3, "codex", () => ({ ...portalValues("portal-3", "replayed", 3), provider: "codex" }),
+    );
+    expect(replay.status).toBe("deleted");
   });
 
   it("rejects stale and equal version updates without changing stored token", async () => {

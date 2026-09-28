@@ -11,6 +11,7 @@ const OPTIONAL_FIELDS = [
 ];
 
 const MODEL_LOCK_PREFIX = "modelLock_";
+const PORTAL_DELETION_SCOPE = "portalDeletedExternalIds";
 
 function resetHealthStateOnActivation(existing, patch) {
   if (patch?.testStatus !== "active") return patch;
@@ -387,6 +388,10 @@ export async function upsertPortalManagedConnection(externalId, tokenVersion, pr
   let outcome;
 
   db.transaction(() => {
+    if (db.get(`SELECT value FROM kv WHERE scope = ? AND key = ?`, [PORTAL_DELETION_SCOPE, externalId])) {
+      outcome = { status: "deleted" };
+      return;
+    }
     const rows = db.all(`SELECT * FROM providerConnections`);
     const existing = rows.map(rowToConn).find((connection) =>
       connection.providerSpecificData?.portalExternalId === externalId
@@ -440,6 +445,29 @@ export async function upsertPortalManagedConnection(externalId, tokenVersion, pr
   });
 
   return outcome;
+}
+
+export async function deletePortalManagedConnection(externalId) {
+  const db = await getAdapter();
+  let deleted = false;
+  db.transaction(() => {
+    // The Portal owns this identity forever. Tombstone and row deletion share
+    // one transaction so an in-flight PUT cannot recreate a revoked credential.
+    db.run(
+      `INSERT INTO kv(scope, key, value) VALUES(?, ?, 'deleted')
+       ON CONFLICT(scope, key) DO NOTHING`,
+      [PORTAL_DELETION_SCOPE, externalId]
+    );
+    const rows = db.all(`SELECT * FROM providerConnections`);
+    const connection = rows.map(rowToConn).find((row) =>
+      row.providerSpecificData?.portalExternalId === externalId
+    );
+    if (!connection) return;
+    db.run(`DELETE FROM providerConnections WHERE id = ?`, [connection.id]);
+    reorderInTx(db, connection.provider);
+    deleted = true;
+  });
+  return deleted;
 }
 
 export async function deleteProviderConnection(id) {
