@@ -1,0 +1,230 @@
+{
+  "schema_version": 3,
+  "format_note": "JSON-compatible YAML; parsed with Node.js JSON.parse to avoid a runtime dependency.",
+  "upstream": {
+    "repository": "https://github.com/decolua/9router",
+    "ref": "v0.5.91",
+    "sha": "f01fb909e37189008080632ddaf404f096345cde"
+  },
+  "reset": {
+    "date": "2026-09-28",
+    "branch": "yolo/9router-v0.5.91",
+    "baseline": "The branch starts at upstream v0.5.91 SHA f01fb909e37189008080632ddaf404f096345cde; missing Azox contracts are ported and upstream connection insert and health fixes retained.",
+    "diff_counts": {
+      "additive": 43,
+      "modified": 37,
+      "total": 80,
+      "verify": "git diff --name-status v0.5.91 HEAD | cut -f1 | sort | uniq -c"
+    },
+    "retired_old_fork_paths": 275,
+    "note": "Upstream-first v0.5.91 overlay; the four supported Azox contracts and gateway monitoring were missing on pristine upstream. Integrates upstream provider connection insert performance and activation health reset with Azox contributor transaction and Portal-managed credential ownership."
+  },
+  "supported_customizations": {
+    "claude_assistant_prefill": {
+      "purpose": "Apply a target-format policy when a request ends with an assistant message: strip by default for Claude Messages, preserve only when x-9router-assistant-prefill is set to preserve, and treat a recognized upstream rejection as model compatibility rather than an account failure.",
+      "primary_paths": [
+        "open-sse/translator/concerns/assistantPrefillPolicy.js",
+        "open-sse/translator/formats/claude.js",
+        "open-sse/config/errorConfig.js",
+        "open-sse/services/accountFallback.js",
+        "open-sse/services/combo.js",
+        "open-sse/utils/error.js",
+        "src/sse/services/auth.js",
+        "open-sse/handlers/chatCore.js"
+      ],
+      "tests": [
+        "tests/translator/assistant-prefill-policy.test.js",
+        "tests/unit/account-fallback-prefill.test.js",
+        "tests/unit/combo-fusion.test.js",
+        "tests/unit/combo-retry-after.test.js"
+      ]
+    },
+    "contributor": {
+      "purpose": "Invitation-based contributor onboarding, scoped OAuth completion, contributor sessions, admin invite management, and dashboard navigation.",
+      "primary_paths": [
+        "src/app/(dashboard)/dashboard/contributors/page.js",
+        "src/app/api/contribute/oauth/[provider]/[action]/route.js",
+        "src/app/api/contribute/session/route.js",
+        "src/app/api/contributor-admin/invites/route.js",
+        "src/app/contribute/page.js",
+        "src/app/contribute/[token]/page.js",
+        "src/app/contribute/TokenExchangeClient.js",
+        "src/lib/contributor/session.js",
+        "src/lib/contributor/store.js",
+        "src/dashboardGuard.js",
+        "src/shared/components/Header.js",
+        "src/shared/components/OAuthModal.js",
+        "src/shared/components/Sidebar.js",
+        "src/shared/constants/customNavigation.js",
+        "src/shared/utils/oauthOrigin.js"
+      ],
+      "tests": [
+        "tests/unit/contributor-store.test.js",
+        "tests/unit/contributor-session-origin.test.js",
+        "tests/unit/contributor-oauth-guard.test.js",
+        "tests/unit/contributor-atomic-completion.test.js",
+        "tests/unit/contributor-atomic-sqlite.test.js",
+        "tests/unit/contributor-proxy-atomic.test.js",
+        "tests/unit/contributor-gitlab-oauth-ssrf.test.js",
+        "tests/unit/oauth-register-session.test.js",
+        "tests/unit/custom-navigation.test.js",
+        "tests/unit/contributor-route-hardening.test.js",
+        "tests/unit/contributor-secret.test.js"
+      ]
+    },
+    "combo_import_export": {
+      "purpose": "Authenticated combo export and validated atomic import with explicit conflict handling.",
+      "primary_paths": [
+        "src/app/(dashboard)/dashboard/import-export/page.js",
+        "src/app/api/import-export/combos/route.js",
+        "src/lib/db/repos/combosRepo.js",
+        "src/lib/db/index.js",
+        "src/lib/localDb.js"
+      ],
+      "tests": [
+        "tests/unit/combo-import-export.test.js"
+      ]
+    },
+    "portal_credential_sync": {
+      "upgrade_critical": true,
+      "purpose": "Consume access-token-only Codex and Claude credentials from AZOX LLM Portal without sharing rotating OAuth refresh tokens between processes.",
+      "authority_contract": "LLM Portal is the sole refresh-token owner. 9Router must never accept, retain, or locally rotate a Portal refresh token. A Portal push is the only credential update authority for rows identified by providerSpecificData.portalExternalId.",
+      "primary_paths": [
+        "src/app/api/internal/portal/connections/[externalId]/route.js",
+        "src/lib/auth/portalSync.js"
+      ],
+      "tests": [
+        "tests/unit/portal-sync-route.test.js"
+      ],
+      "required_upgrade_checks": [
+        "Preserve access-token-only writes and explicitly remove any stale stored refreshToken on update.",
+        "Preserve providerSpecificData.portalExternalId and monotonic portalTokenVersion ordering; reject stale versions without replacing a newer token.",
+        "Do not add Portal-managed rows to any local background refresh or missing-refresh-token deactivation path.",
+        "Keep direct-login OAuth refresh behavior unchanged for rows without portalExternalId.",
+        "Run the portal sync regression test and a production-style Codex and Claude smoke before rollout."
+      ],
+      "incident_reference": "On 2026-09-11/12 OmniRoute, not 9Router, misclassified Portal-managed rows with no refresh token and eventually deactivated Codex, surfacing HTTP 429 after retries. The shared root contract is nevertheless upgrade-critical for both routers because giving either router the rotating refresh token would create cross-router invalidation races."
+    }
+  },
+  "retained_dependency_closure": {
+    "request_and_runtime_helpers": [
+      "open-sse/config/runtimeConfig.js",
+      "open-sse/providers/capabilities.js",
+      "open-sse/services/modelCatalogResponse.js",
+      "open-sse/translator/concerns/hostedToolPolicy.js",
+      "open-sse/translator/schema/blocks.js",
+      "open-sse/utils/abort.js",
+      "open-sse/utils/requestBody.js",
+      "src/sse/handlers/chat.js",
+      "src/sse/utils/gatewayMonitoring.js"
+    ],
+    "oauth_and_connection_atomicity": [
+      "src/app/api/oauth/[provider]/[action]/route.js",
+      "src/lib/db/repos/connectionsRepo.js",
+      "src/lib/oauth/providerHelpers.js",
+      "src/lib/oauth/providers/gitlab.js",
+      "src/lib/oauth/providers/xai.js",
+      "src/lib/oauth/services/qoder.js",
+      "src/lib/oauth/utils/server.js",
+      "src/lib/oauth/utils/xaiHttp.js",
+      "src/shared/utils/apiKey.js",
+      "src/lib/contributor/supportedProviders.js",
+      "open-sse/shared/zedAuth.js"
+    ],
+    "database_integrity": [
+      "src/lib/db/adapters/sqljsAdapter.js",
+      "src/lib/db/backup.js",
+      "src/lib/db/repos/usageRepo.js"
+    ],
+    "standalone_build": [
+      "Dockerfile",
+      "next.config.mjs",
+      "package-lock.json",
+      "scripts/copy-standalone-assets.mjs",
+      "tests/unit/standalone-assets.test.js"
+    ],
+    "rationale": "These files are retained because the supported features import their symbols or rely on their atomicity, bounded-request, OAuth-origin, database, or standalone-image contracts. Several are whole-file carryovers and therefore include hardening beyond the three user-facing customizations; they must remain regression-tested and are candidates for later surgical reduction."
+  },
+  "verification": {
+    "pure_upstream_full_suite": "Pristine upstream contract run: 18 selected files; 8 assertions passed, 17 failed and 20 suites failed/collection failed before applying Azox production code. Full upstream baseline still requires separate recording.",
+    "overlay_full_suite": "Pristine upstream v0.5.91: 2,732 passed, 98 assertion failures, 59 skipped (2,889 tests). Candidate: 2,946 passed, 95 assertion failures, 59 skipped (3,100 tests). Exact assertion identity diff: zero candidate-only failures and three upstream failures resolved; collection failures no worse. Full suite remains red due to upstream baseline/environment failures.",
+    "azox_contract_suite": "18 selected contract files, 216 passed, 0 failed.",
+    "oauth_zed_conflict_suite": "5 files / 92 tests passed after resolving upstream Zed versus contributor ownership semantics.",
+    "gateway_monitoring": "node --test tests/unit/gateway-monitoring.node-test.js: 2 passed; node-only test excluded from Vitest discovery.",
+    "live_production": "Not run. No deployment requested or performed.",
+    "live_claude_prefill": "Not run in this upgrade checkout.",
+    "review_focused_suite": "10 files / 159 tests passed (OAuth, Portal, contributor, combo, Claude translator); gateway monitoring node --test 2 passed.",
+    "build": "npm --prefix azox-9router run build passed: compiled and generated 154 static pages; npm ci --legacy-peer-deps succeeded using refreshed v0.5.91 package-lock.json.",
+    "security_review": "Focused read-only review found no confirmed newly introduced vulnerability; coverage is partial. Auth/credential changes require principal final review before merge/publish under SAFE-050."
+  },
+  "maintenance_rules": [
+    "Compare this manifest and its counts with git diff --name-status against upstream_sha before release.",
+    "Treat supported_customizations.portal_credential_sync as upgrade-critical: every upstream merge, rebase, reset, authentication refactor, or credential-health change requires an explicit contract review and the listed regression checks.",
+    "Do not restore retired Responses/SSE conversion seams without isolated regression tests covering content loss, duplicate content, stream and non-stream parity, and InvalidStreamResponseError.",
+    "Keep additive helpers additive where possible; reduce whole-file dependency carryovers only with feature-level and baseline tests.",
+    "Update upstream.ref, upstream.sha, diff counts, retained paths, tests, and known behavior losses together on every upstream reset."
+  ],
+  "restored_to_upstream_seams": {
+    "note": "Fork modifications to these seams were dropped and the files now match upstream byte-for-byte. They are live upstream code — do not delete them.",
+    "paths": [
+      "open-sse/handlers/chatCore/nonStreamingHandler.js",
+      "open-sse/handlers/chatCore/sseToJsonHandler.js",
+      "open-sse/handlers/chatCore/streamingHandler.js",
+      "open-sse/handlers/responsesHandler.js",
+      "open-sse/executors/codex.js",
+      "open-sse/transformer/responsesTransformer.js",
+      "open-sse/transformer/streamToJsonConverter.js"
+    ]
+  },
+  "deleted_fork_only_files": {
+    "note": "Fork inventions with no upstream counterpart, removed by the reset.",
+    "paths": [
+      "open-sse/utils/streamContract.js"
+    ]
+  },
+  "review_fixes": {
+    "note": "Defects found by independent review of the reset branch and fixed in place.",
+    "items": [
+      "chatCore now maps ToolCompatibilityError to HTTP 400 instead of letting it escape as an opaque 500 that a combo would retry.",
+      "chatCore passes raw client headers to normalizeClaudePassthrough so x-9router-assistant-prefill: preserve works on native passthrough.",
+      "The prefill policy keeps a trailing turn holding signed or redacted reasoning instead of silently dropping unregenerable provider history.",
+      "GET /api/contributor-admin/invites now enforces the same-origin check its mutating siblings use.",
+      "Both contributor routes use the bounded JSON reader with an explicit byte cap and reject malformed bodies with 400 rather than 500.",
+      "The invite route no longer returns raw internal error messages.",
+      "The contributor session secret only self-creates when genuinely absent or empty, uses exclusive create, and propagates other IO faults instead of rotating the live secret.",
+      "Combo import rejects a zero-model combo that would persist but never route.",
+      "parseRetryDeadline again accepts a numeric epoch retryAfter from the JSON error body, restoring the Retry-After signal.",
+      "The import/export route imports @/lib/db/index.js instead of the localDb compat shim."
+    ]
+  },
+  "known_inert_carryovers": {
+    "note": "Retained whole-file dependencies whose largest new blocks have no production caller, because their call sites remain at upstream. Tested in isolation but unreachable; candidates for symbol-level reduction or removal in a follow-up.",
+    "items": [
+      "src/sse/services/auth.js account-mutation ordering (beginAccountMutationAttempt and friends) has no callers.",
+      "open-sse/services/combo.js abort/signal plumbing is unreachable because src/sse/handlers/ remains at upstream arity.",
+      "src/lib/oauth/utils/server.js records createdAt on pending sessions but nothing reads or sweeps it."
+    ]
+  },
+  "qualification": {
+    "method": "Run Azox behavior/contract tests against pure upstream before applying any downstream production code.",
+    "upstream_ref": "v0.5.91",
+    "sampled_contracts": {
+      "claude_assistant_prefill": "missing",
+      "contributor": "missing",
+      "combo_import_export": "missing",
+      "portal_credential_sync": "missing",
+      "gateway_monitoring": "missing"
+    },
+    "absorbed": {
+      "provider_aware_model_modalities": "Upstream v0.5.91 retains provider-aware catalog modality lookup; no Azox override ported.",
+      "request_scoped_4xx_no_cooldown": "Upstream 20a43f5a handles generic request-scoped 4xx; the overlay retains only explicit model-compatibility classifiers used by the Azox prefill contract."
+    },
+    "conflicts_resolved": [
+      "Preserved upstream Xiaomi MiMo OAuth while retaining contributor proxy ownership and secret-in-query rejection.",
+      "Preserved upstream Zed systemId, retry-listener lifecycle and provider error behavior while binding contributor sessions to their reservation and proxy generation.",
+      "Preserved upstream provider-aware Qoder userInfoUrl while retaining bounded response reads.",
+      "Preserved upstream tool-result image hoisting and the Azox selected-tool compatibility guard.",
+      "Retained upstream OAuthModal lifecycle and reapplied only the apiBase seam required by the contributor flow."
+    ]
+  }
+}

@@ -143,7 +143,14 @@ export function decryptZedAccessToken(encryptedAccessToken, privateKeyVerifier) 
   const encrypted = Buffer.from(String(encryptedAccessToken), "base64url");
   const fail = (oaepError) => {
     const message = oaepError instanceof Error ? oaepError.message : String(oaepError);
-    throw new Error(`Failed to decrypt Zed access token: ${message}`);
+    const error = new Error(`Failed to decrypt Zed access token: ${message}`);
+    // Local crypto failure, not an upstream response: it carries an OpenSSL
+    // padding/decoding reason and never echoes a credential. Tag it as a
+    // client error so the proxy's failure sanitizer surfaces it verbatim
+    // instead of collapsing it to the generic "OAuth authentication failed"
+    // reserved for provider exceptions that may quote a raw response body.
+    error.status = 400;
+    throw error;
   };
   try {
     return crypto

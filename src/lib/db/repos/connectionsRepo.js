@@ -132,6 +132,111 @@ function reorderInTx(db, providerId) {
   });
 }
 
+export function createProviderConnectionInTransaction(db, data, { deduplicate = true } = {}) {
+  const now = new Date().toISOString();
+
+  const isApikey = data.authType === "apikey" && !!data.name;
+  const all = isApikey
+    ? db.all(
+        `SELECT * FROM providerConnections WHERE provider = ? AND authType = ? AND name = ?`,
+        [data.provider, "apikey", data.name]
+      ).map(rowToConn)
+    : db.all(`SELECT * FROM providerConnections WHERE provider = ?`, [data.provider]).map(rowToConn);
+  const poolSize = isApikey
+    ? db.get(`SELECT COUNT(*) AS n FROM providerConnections WHERE provider = ?`, [data.provider])?.n ?? all.length
+    : all.length;
+
+  let existing = null;
+  if (deduplicate && data.authType === "oauth" && data.email) {
+    const incomingUsername = data.providerSpecificData?.username;
+    const incomingWs = data.providerSpecificData?.chatgptAccountId;
+    existing = all.find(c => {
+      if (c.authType !== "oauth" || c.email !== data.email) return false;
+      // Portal-managed credentials have their own external identity and must
+      // never be claimed by a direct OAuth login for the same email/account.
+      if (c.providerSpecificData?.portalExternalId) return false;
+
+      // Codex/OpenAI can issue multiple OAuth grants for the same email.
+      // Refresh tokens are rotated single-use; collapsing a new login onto an
+      // existing bare-email row overwrites the first account's token pair and
+      // makes it look "invalid" after adding a second account. Only update an
+      // existing Codex row when both rows expose the same ChatGPT account ID.
+      if (data.provider === "codex") {
+        const existingWs = c.providerSpecificData?.chatgptAccountId;
+        return !!incomingWs && !!existingWs && incomingWs === existingWs;
+      }
+
+      // Workspace providers use workspace ID when both sides have it
+      const existingWs = c.providerSpecificData?.chatgptAccountId;
+      if (incomingWs && existingWs) return incomingWs === existingWs;
+      if (incomingWs && !existingWs) return false;
+      if (!incomingWs && existingWs) return false;
+      // Non-workspace providers: match on (email + username) so cross-IdP
+      // accounts don't overwrite each other. Require username on both sides
+      // — if only one side has it, treat as a distinct identity rather than
+      // collapsing onto the bare-email fallback (which would re-introduce
+      // the cross-IdP overwrite).
+      const existingUsername = c.providerSpecificData?.username;
+      if (incomingUsername && existingUsername) {
+        return incomingUsername === existingUsername;
+      }
+      if (incomingUsername || existingUsername) return false;
+      return true;
+    });
+  } else if (deduplicate && data.authType === "apikey" && data.name) {
+    existing = all.find(c => c.authType === "apikey" && c.name === data.name);
+  }
+  // access_token: never dedup — user manages duplicates manually
+
+  if (existing) {
+    if (data.allowOverwrite === false) {
+      const err = new Error(
+        `A connection named "${existing.name}" already exists for provider "${data.provider}". ` +
+        `Pass allowOverwrite: true to replace it.`
+      );
+      err.code = "PROVIDER_NAME_CONFLICT";
+      err.existingId = existing.id;
+      err.existingName = existing.name;
+      throw err;
+    }
+    const normalized = resetHealthStateOnActivation(existing, data);
+    const merged = { ...existing, ...normalized, updatedAt: now };
+    upsert(db, merged);
+    return merged;
+  }
+
+  let connectionName = data.name || null;
+  if (!connectionName && (data.authType === "oauth" || data.authType === "access_token")) {
+    connectionName = deriveConnectionName(data, data.email || `Account ${poolSize + 1}`);
+  }
+  let connectionPriority = data.priority;
+  if (!connectionPriority) {
+    const maxRow = db.get(`SELECT MAX(priority) AS m FROM providerConnections WHERE provider = ?`, [data.provider]);
+    connectionPriority = (maxRow?.m || 0) + 1;
+  }
+
+  const conn = {
+    id: uuidv4(),
+    provider: data.provider,
+    authType: data.authType || "oauth",
+    name: connectionName,
+    priority: connectionPriority,
+    isActive: data.isActive !== undefined ? data.isActive : true,
+    createdAt: now,
+    updatedAt: now,
+  };
+  for (const f of OPTIONAL_FIELDS) {
+    if (data[f] !== undefined && data[f] !== null) conn[f] = data[f];
+  }
+  if (data.providerSpecificData && Object.keys(data.providerSpecificData).length > 0) {
+    conn.providerSpecificData = data.providerSpecificData;
+  }
+  if (data.email !== undefined) conn.email = data.email;
+
+  upsert(db, conn);
+  return conn;
+}
+
 export async function createProviderConnection(data) {
   const db = await getAdapter();
   const now = new Date().toISOString();
@@ -160,6 +265,7 @@ export async function createProviderConnection(data) {
       const incomingWs = data.providerSpecificData?.chatgptAccountId;
       existing = all.find(c => {
         if (c.authType !== "oauth" || c.email !== data.email) return false;
+        if (c.providerSpecificData?.portalExternalId) return false;
 
         // Codex/OpenAI can issue multiple OAuth grants for the same email.
         // Refresh tokens are rotated single-use; collapsing a new login onto an
@@ -274,6 +380,66 @@ export async function updateProviderConnection(id, data) {
     result = merged;
   });
   return result;
+}
+
+export async function upsertPortalManagedConnection(externalId, tokenVersion, provider, buildValues) {
+  const db = await getAdapter();
+  let outcome;
+
+  db.transaction(() => {
+    const rows = db.all(`SELECT * FROM providerConnections`);
+    const existing = rows.map(rowToConn).find((connection) =>
+      connection.providerSpecificData?.portalExternalId === externalId
+    ) || null;
+    const currentVersion = existing?.providerSpecificData?.portalTokenVersion || 0;
+
+    if (existing && provider !== existing.provider) {
+      outcome = { status: "provider_mismatch", connection: existing, tokenVersion: currentVersion };
+      return;
+    }
+    if (existing && tokenVersion < currentVersion) {
+      outcome = { status: "stale", connection: existing, tokenVersion: currentVersion };
+      return;
+    }
+    if (existing && tokenVersion === currentVersion) {
+      // A same-version Portal replay may repair terminal health and metadata,
+      // but must not replace the current access token or expiry. Portal is the
+      // only refresh authority, so a prior router error cannot remain sticky.
+      const values = buildValues(existing);
+      const healed = {
+        ...existing,
+        ...resetHealthStateOnActivation(existing, { testStatus: "active" }),
+        refreshToken: undefined,
+        isActive: values.isActive,
+        displayName: values.displayName ?? existing.displayName,
+        name: values.name ?? existing.name,
+        updatedAt: new Date().toISOString(),
+      };
+      upsert(db, healed);
+      outcome = { status: "unchanged", connection: healed, tokenVersion: currentVersion };
+      return;
+    }
+
+    const values = buildValues(existing);
+    if (existing) {
+      // Portal is the sole refresh-token owner. An explicit undefined removes
+      // any stale value inherited from an older or incorrectly-classified row.
+      const merged = {
+        ...existing,
+        ...values,
+        refreshToken: undefined,
+        updatedAt: new Date().toISOString(),
+      };
+      upsert(db, merged);
+      outcome = { status: "updated", connection: merged, tokenVersion };
+      return;
+    }
+
+    const connection = createProviderConnectionInTransaction(db, values, { deduplicate: false });
+    outcome = { status: "created", connection, tokenVersion };
+  });
+
+  return outcome;
 }
 
 export async function deleteProviderConnection(id) {

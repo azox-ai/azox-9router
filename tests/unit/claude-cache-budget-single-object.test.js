@@ -94,7 +94,9 @@ describe("cache marker budget and single-block content", () => {
         { role: "user", content: [text("q")] },
       ],
     }, "claude");
-    expect(countMarkers(out)).toBe(1);                 // base: 0
+    expect(countMarkers(out)).toBe(2);                 // Claude identity system block + last assistant turn
+    expect(out.system[0].cache_control).toBeDefined();
+    expect(out.messages[1].content[0].cache_control).toBeDefined();
   });
 
   it("keeps a marked single-object turn when the marker budget is spent", () => {
