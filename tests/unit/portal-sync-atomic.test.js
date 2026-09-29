@@ -60,6 +60,15 @@ describe("Portal credential identity and monotonic version", () => {
     expect((await repo.getProviderConnectionById(connection.id)).testStatus).not.toBe("unavailable");
   });
 
+  it("does not persist a revoked OAuth callback after adapter acquisition", async () => {
+    let allowed = true;
+    const created = await repo.createProviderConnection({
+      provider: "claude", authType: "oauth", email: "revoked@example.test", accessToken: "stale",
+    }, { shouldCommit: () => allowed = false });
+    expect(created).toBeNull();
+    expect(await repo.getProviderConnections({ provider: "claude" })).toHaveLength(0);
+  });
+
   it("keeps Portal ownership when a regular connection update changes metadata", async () => {
     const original = await repo.upsertPortalManagedConnection(
       "portal-owned", 4, "claude", () => portalValues("portal-owned", "portal-token", 4),
