@@ -1,3 +1,9 @@
+# AZOX candidate based on upstream v0.5.91 (unreleased)
+
+- Retain Claude assistant-prefill, Contributor onboarding, combo Import/Export and Portal credential-sync contracts on the upstream v0.5.91 baseline.
+- Portal owns credential rotation: revoke IDs with durable tombstones; protect live and deleted credentials from snapshots and generic writes; fence stale account-health updates by Portal token version.
+- Preserve guarded OAuth credential creation and upstream provider-connection insertion improvements. Focused security review and master integration are pending; no AZOX release tag or deployment exists for this candidate.
+
 # v0.5.91 (2026-09-26)
 
 ## Features

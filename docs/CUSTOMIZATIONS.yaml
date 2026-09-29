@@ -11,9 +11,9 @@
     "branch": "yolo/9router-v0.5.91",
     "baseline": "The branch starts at upstream v0.5.91 SHA f01fb909e37189008080632ddaf404f096345cde; missing Azox contracts are ported and upstream connection insert and health fixes retained.",
     "diff_counts": {
-      "additive": 43,
-      "modified": 37,
-      "total": 80,
+      "additive": 45,
+      "modified": 39,
+      "total": 84,
       "verify": "git diff --name-status v0.5.91 HEAD | cut -f1 | sort | uniq -c"
     },
     "retired_old_fork_paths": 275,
@@ -147,15 +147,15 @@
   },
   "verification": {
     "pure_upstream_full_suite": "Pristine upstream v0.5.91 full Vitest run: 2,732 passed, 98 assertion failures, 59 skipped (2,889 tests), 6 collection failures. Azox contract tests on pristine upstream: selected 18 files, 8 assertions passed, 17 failed and 20 suites failed/collection failed before adding Azox production code.",
-    "overlay_full_suite": "Pristine upstream v0.5.91: 2,732 passed, 98 assertion failures, 59 skipped (2,889 tests). Candidate: 2,946 passed, 95 assertion failures, 59 skipped (3,100 tests). Exact assertion identity diff: zero candidate-only failures and three upstream failures resolved; collection failures no worse. Full suite remains red due to upstream baseline/environment failures.",
-    "azox_contract_suite": "18 selected contract files, 216 passed, 0 failed.",
+    "overlay_full_suite": "Pristine upstream v0.5.91: 2,732 passed, 98 assertion failures, 59 skipped (2,889 tests). Candidate: 2,970 passed, 95 assertion failures, 59 skipped (3,124 tests). Exact assertion identity diff: zero candidate-only failures and three upstream failures resolved. Full suite remains red due to upstream baseline/environment failures; no CI run.",
+    "azox_contract_suite": "20 selected contract files, 236 passed, 0 failed on candidate 3281a5ed; rerun after subsequent commits before release.",
     "oauth_zed_conflict_suite": "5 files / 92 tests passed after resolving upstream Zed versus contributor ownership semantics.",
     "gateway_monitoring": "node --test tests/unit/gateway-monitoring.node-test.js: 2 passed; node-only test excluded from Vitest discovery.",
     "live_production": "Not run. No deployment requested or performed.",
     "live_claude_prefill": "Not run in this upgrade checkout.",
     "review_focused_suite": "10 files / 159 tests passed (OAuth, Portal, contributor, combo, Claude translator); gateway monitoring node --test 2 passed.",
     "build": "npm --prefix azox-9router run build passed: compiled and generated 154 static pages; npm ci --legacy-peer-deps succeeded using refreshed v0.5.91 package-lock.json.",
-    "security_review": "Release blocked: review identified inherited Portal DELETE replay/PUT race (revoked credential can be recreated) and inactive request-order guard for account failure writes. Both require security review and resolution before merge/tag. Focused review coverage remains partial; auth/credential changes require principal final review under SAFE-050."
+    "security_review": "Release blocked pending principal final review under SAFE-050. Portal tombstone, generic delete, import authority, identity reservation, token-generation health fence and OAuth create guard have focused RED/GREEN tests. Remaining inherited contributor OAuth ownership/reservation findings and full 37-conflict integration require review before merge/tag. No production deploy was requested."
   },
   "maintenance_rules": [
     "Compare this manifest and its counts with git diff --name-status against upstream_sha before release.",
