@@ -390,8 +390,13 @@ export async function updateProviderConnection(id, data, options = {}) {
     const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
-    const normalized = resetHealthStateOnActivation(existing, data);
     const portalId = existing.providerSpecificData?.portalExternalId;
+    if (portalId && options.expectedPortalTokenVersion !== undefined &&
+        existing.providerSpecificData.portalTokenVersion !== options.expectedPortalTokenVersion) {
+      result = null;
+      return;
+    }
+    const normalized = resetHealthStateOnActivation(existing, data);
     const guarded = portalId ? {
       ...normalized,
       accessToken: existing.accessToken,

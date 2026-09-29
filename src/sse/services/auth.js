@@ -561,8 +561,11 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     options?.afterCommit?.();
   } : null;
 
-  await updateConnectionWithSignal(connectionId, update, signal, shouldCommit, beforeCommit, afterCommit);
-  if (shouldCommit && !shouldCommit()) return { ...routingResult, superseded: true };
+  const updated = await updateConnectionWithSignal(
+    connectionId, update, signal, shouldCommit, beforeCommit, afterCommit,
+    options?.expectedPortalTokenVersion,
+  );
+  if (updated === null || (shouldCommit && !shouldCommit())) return { ...routingResult, superseded: true };
 
   const lockKey = Object.keys(lockUpdate)[0];
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
@@ -652,6 +655,8 @@ export async function clearAccountError(connectionId, currentConnection, model =
     null,
     combineCommitPredicates(shouldCommit, hasUpdates),
     beforeCommit,
+    null,
+    options?.expectedPortalTokenVersion,
   );
 }
 
@@ -662,6 +667,7 @@ async function updateConnectionWithSignal(
   shouldCommit = null,
   beforeCommit = null,
   afterCommit = null,
+  expectedPortalTokenVersion = undefined,
 ) {
   throwIfAborted(signal);
   if (shouldCommit && !shouldCommit()) return null;
@@ -670,6 +676,7 @@ async function updateConnectionWithSignal(
     ...(shouldCommit ? { shouldCommit } : {}),
     ...(beforeCommit ? { beforeCommit } : {}),
     ...(afterCommit ? { afterCommit } : {}),
+    ...(expectedPortalTokenVersion !== undefined ? { expectedPortalTokenVersion } : {}),
   };
   const result = Object.keys(guardedOptions).length > 0
     ? await updateProviderConnection(connectionId, updates, guardedOptions)

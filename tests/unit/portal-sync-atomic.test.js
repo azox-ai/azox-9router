@@ -167,6 +167,61 @@ describe("Portal credential identity and monotonic version", () => {
     });
   });
 
+  it("does not let an old-token success clear a newer Portal lock", async () => {
+    const auth = await import("../../src/sse/services/auth.js");
+    const created = await repo.upsertPortalManagedConnection(
+      "portal-success-race", 1, "claude", () => portalValues("portal-success-race", "old-token", 1),
+    );
+    await repo.upsertPortalManagedConnection(
+      "portal-success-race", 2, "claude", () => portalValues("portal-success-race", "new-token", 2),
+    );
+    await repo.updateProviderConnection(created.connection.id, {
+      testStatus: "unavailable", lastError: "new-token failure",
+      modelLock_test: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await auth.clearAccountError(created.connection.id, created.connection, "test", {
+      reloadCurrent: true, expectedPortalTokenVersion: 1,
+    });
+    const current = await repo.getProviderConnectionById(created.connection.id);
+    expect(current.testStatus).toBe("unavailable");
+    expect(current.modelLock_test).toBeTruthy();
+  });
+
+  it("does not route a stale health update to the rotated Portal credential", async () => {
+    const auth = await import("../../src/sse/services/auth.js");
+    const created = await repo.upsertPortalManagedConnection(
+      "portal-routed", 1, "claude", () => portalValues("portal-routed", "old-token", 1),
+    );
+    await repo.upsertPortalManagedConnection(
+      "portal-routed", 2, "claude", () => portalValues("portal-routed", "new-token", 2),
+    );
+    const result = await auth.markAccountUnavailable(
+      created.connection.id, 429, "quota", "claude", "test", null,
+      { expectedPortalTokenVersion: 1 },
+    );
+    expect(result.superseded).toBe(true);
+    const current = await repo.getProviderConnectionById(created.connection.id);
+    expect(current.testStatus).toBe("active");
+    expect(current.modelLock_test).toBeUndefined();
+  });
+
+  it("rejects a late health lock from the previous Portal token version", async () => {
+    const created = await repo.upsertPortalManagedConnection(
+      "portal-race", 1, "claude", () => portalValues("portal-race", "old-token", 1),
+    );
+    await repo.upsertPortalManagedConnection(
+      "portal-race", 2, "claude", () => portalValues("portal-race", "new-token", 2),
+    );
+    const guarded = await repo.updateProviderConnection(created.connection.id, {
+      testStatus: "unavailable", modelLock_test: new Date(Date.now() + 60_000).toISOString(),
+    }, { expectedPortalTokenVersion: 1 });
+    expect(guarded).toBeNull();
+    const current = await repo.getProviderConnectionById(created.connection.id);
+    expect(current.accessToken).toBe("new-token");
+    expect(current.testStatus).toBe("active");
+    expect(current.modelLock_test).toBeUndefined();
+  });
+
   it("clears stale model locks when Portal pushes a newer access token", async () => {
     const created = await repo.upsertPortalManagedConnection(
       "portal-refresh", 1, "codex", () => ({ ...portalValues("portal-refresh", "old-token", 1), provider: "codex" }),

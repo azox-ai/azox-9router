@@ -317,6 +317,11 @@ async function handleSingleModelChat(
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
     const mutationAttempt = beginAccountMutationAttempt(credentials.connectionId, model);
+    const expectedPortalTokenVersion = credentials.providerSpecificData?.portalExternalId
+      ? credentials.providerSpecificData.portalTokenVersion
+      : undefined;
+    const mutationOptions = { mutationAttempt, ...(expectedPortalTokenVersion !== undefined
+      ? { expectedPortalTokenVersion } : {}) };
     let mutationReleased = false;
     const releaseMutationAttempt = () => {
       if (mutationReleased) return;
@@ -364,7 +369,7 @@ async function handleSingleModelChat(
         onRequestSuccess: async () => {
           recordAccountMutationSuccess(mutationAttempt);
           try {
-            await clearAccountError(credentials.connectionId, credentials, model, { mutationAttempt });
+            await clearAccountError(credentials.connectionId, credentials, model, mutationOptions);
             // "Consecutive" strikes: a success clears the breaker for this pair.
             clearAntigravityStrikes(credentials.connectionId, model);
           } finally {
@@ -422,7 +427,7 @@ async function handleSingleModelChat(
     try {
       shouldFallback = provider === "antigravity" && quotaResetMs
         ? true
-        : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs, { mutationAttempt })).shouldFallback;
+        : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs, mutationOptions)).shouldFallback;
     } finally {
       releaseMutationAttempt();
     }

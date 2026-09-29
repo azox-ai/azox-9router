@@ -58,7 +58,8 @@ describe("chat account mutation ordering", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.pending = [];
-    state.credentials = { connectionId: "account-1", connectionName: "Test", accessToken: "dummy" };
+    state.credentials = { connectionId: "account-1", connectionName: "Test", accessToken: "dummy",
+      providerSpecificData: { portalExternalId: "portal-1", portalTokenVersion: 3 } };
     let id = 0;
     state.begin.mockImplementation(() => ({ id: ++id }));
     state.unavailable.mockResolvedValue({ shouldFallback: false, cooldownMs: 0 });
@@ -80,8 +81,10 @@ describe("chat account mutation ordering", () => {
     const first = state.begin.mock.results[0].value;
     const second = state.begin.mock.results[1].value;
     expect(state.success).toHaveBeenCalledWith(second);
-    expect(state.clear).toHaveBeenCalledWith("account-1", state.credentials, "test-model", { mutationAttempt: second });
-    expect(state.unavailable).toHaveBeenCalledWith("account-1", 429, "quota", "claude", "test-model", undefined, { mutationAttempt: first });
+    expect(state.clear).toHaveBeenCalledWith("account-1", state.credentials, "test-model",
+      { mutationAttempt: second, expectedPortalTokenVersion: 3 });
+    expect(state.unavailable).toHaveBeenCalledWith("account-1", 429, "quota", "claude", "test-model", undefined,
+      { mutationAttempt: first, expectedPortalTokenVersion: 3 });
     expect(state.end).toHaveBeenCalledWith(first);
     expect(state.end).toHaveBeenCalledWith(second);
   });
