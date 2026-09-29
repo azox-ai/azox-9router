@@ -60,6 +60,22 @@ describe("Portal credential identity and monotonic version", () => {
     expect((await repo.getProviderConnectionById(connection.id)).testStatus).not.toBe("unavailable");
   });
 
+  it("keeps Portal ownership when a regular connection update changes metadata", async () => {
+    const original = await repo.upsertPortalManagedConnection(
+      "portal-owned", 4, "claude", () => portalValues("portal-owned", "portal-token", 4),
+    );
+    const updated = await repo.updateProviderConnection(original.connection.id, {
+      providerSpecificData: { portalExternalId: null, portalTokenVersion: 1, label: "renamed" },
+      accessToken: "unauthorized-replacement",
+      refreshToken: "router-refresh-token",
+    });
+    expect(updated.providerSpecificData.portalExternalId).toBe("portal-owned");
+    expect(updated.providerSpecificData.portalTokenVersion).toBe(4);
+    expect(updated.accessToken).toBe("portal-token");
+    expect(updated.refreshToken).toBeUndefined();
+    expect(await repo.deletePortalManagedConnection("portal-owned")).toBe(true);
+  });
+
   it("checks a guarded connection update inside its transaction", async () => {
     const connection = await repo.createProviderConnection({
       provider: "claude", authType: "oauth", email: "account@example.test", accessToken: "original",

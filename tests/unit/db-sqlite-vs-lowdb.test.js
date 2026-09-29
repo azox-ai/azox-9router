@@ -358,6 +358,24 @@ describe("DB SQLite layer — public API parity", () => {
     expect((await sqliteDb.getModelAliases()).marker).toBe("before");
   });
 
+  it("importDb does not roll back a live Portal access token", async () => {
+    const current = await sqliteDb.upsertPortalManagedConnection("live-portal", 9, "claude", () => ({
+      provider: "claude", authType: "oauth", accessToken: "current-token", isActive: true,
+      providerSpecificData: { portalExternalId: "live-portal", portalTokenVersion: 9 },
+    }));
+    const oldSnapshot = {
+      providerConnections: [{
+        ...current.connection,
+        accessToken: "stale-token",
+        providerSpecificData: { portalExternalId: "live-portal", portalTokenVersion: 1 },
+      }],
+    };
+    await sqliteDb.importDb(oldSnapshot);
+    const after = await sqliteDb.getProviderConnectionById(current.connection.id);
+    expect(after.accessToken).toBe("current-token");
+    expect(after.providerSpecificData.portalTokenVersion).toBe(9);
+  });
+
   it("importDb does not restore a deleted Portal identity", async () => {
     const portalRow = {
       id: "restored-portal-row", provider: "claude", authType: "oauth", name: "restored",

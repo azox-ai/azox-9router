@@ -381,7 +381,20 @@ export async function updateProviderConnection(id, data, options = {}) {
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
     const normalized = resetHealthStateOnActivation(existing, data);
-    const merged = { ...existing, ...normalized, updatedAt: new Date().toISOString() };
+    const portalId = existing.providerSpecificData?.portalExternalId;
+    const guarded = portalId ? {
+      ...normalized,
+      accessToken: existing.accessToken,
+      expiresAt: existing.expiresAt,
+      refreshToken: undefined,
+      providerSpecificData: {
+        ...(normalized.providerSpecificData || {}),
+        ...existing.providerSpecificData,
+        portalExternalId: portalId,
+        portalTokenVersion: existing.providerSpecificData.portalTokenVersion,
+      },
+    } : normalized;
+    const merged = { ...existing, ...guarded, updatedAt: new Date().toISOString() };
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;
