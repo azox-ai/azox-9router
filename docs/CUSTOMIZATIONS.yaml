@@ -12,8 +12,8 @@
     "baseline": "The branch starts at upstream v0.5.91 SHA f01fb909e37189008080632ddaf404f096345cde; missing Azox contracts are ported and upstream connection insert and health fixes retained.",
     "diff_counts": {
       "additive": 45,
-      "modified": 39,
-      "total": 84,
+      "modified": 40,
+      "total": 85,
       "verify": "git diff --name-status v0.5.91 HEAD | cut -f1 | sort | uniq -c"
     },
     "retired_old_fork_paths": 275,
