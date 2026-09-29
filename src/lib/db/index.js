@@ -106,9 +106,13 @@ export async function importDb(payload) {
     const livePortalConnections = db.all(`SELECT * FROM providerConnections`).filter((row) =>
       parseJson(row.data, {}).providerSpecificData?.portalExternalId
     );
-    const livePortalIds = new Set(livePortalConnections.map((row) =>
-      parseJson(row.data, {}).providerSpecificData.portalExternalId
-    ));
+    const livePortalRowIds = new Set(livePortalConnections.map((row) => row.id));
+    const importedConnections = payload.providerConnections || [];
+    if (importedConnections.some((connection) =>
+      !connection.providerSpecificData?.portalExternalId && livePortalRowIds.has(connection.id)
+    )) {
+      throw new Error("Imported connection ID conflicts with a Portal-managed connection");
+    }
     // Wipe all tables (keep _meta)
     db.run(`DELETE FROM settings`);
     db.run(`DELETE FROM providerConnections`);
@@ -123,12 +127,10 @@ export async function importDb(payload) {
       db.run(`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, [stringifyJson(payload.settings)]);
     }
 
-    for (const c of payload.providerConnections || []) {
-      const externalId = c.providerSpecificData?.portalExternalId;
-      if (externalId && (livePortalIds.has(externalId) ||
-        db.get(`SELECT value FROM kv WHERE scope = ? AND key = ?`, ["portalDeletedExternalIds", externalId]))) {
-        continue;
-      }
+    for (const c of importedConnections) {
+      // Only the Portal sync endpoint may create or rotate Portal credentials.
+      // Imported snapshots may hold expired access or even a refresh token.
+      if (c.providerSpecificData?.portalExternalId) continue;
       const { id, provider, authType, name, email, priority, isActive, createdAt, updatedAt, ...rest } = c;
       db.run(
         `INSERT OR REPLACE INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

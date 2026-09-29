@@ -155,6 +155,25 @@ describe("Portal credential identity and monotonic version", () => {
     });
   });
 
+  it("clears stale model locks when Portal pushes a newer access token", async () => {
+    const created = await repo.upsertPortalManagedConnection(
+      "portal-refresh", 1, "codex", () => ({ ...portalValues("portal-refresh", "old-token", 1), provider: "codex" }),
+    );
+    await repo.updateProviderConnection(created.connection.id, {
+      testStatus: "unavailable", errorCode: "rate_limit", lastError: "old error",
+      modelLock_codex: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const replacement = await repo.upsertPortalManagedConnection(
+      "portal-refresh", 2, "codex", () => ({ ...portalValues("portal-refresh", "new-token", 2), provider: "codex" }),
+    );
+    expect(replacement.status).toBe("updated");
+    const current = await repo.getProviderConnectionById(created.connection.id);
+    expect(current.accessToken).toBe("new-token");
+    expect(current.testStatus).toBe("active");
+    expect(current.errorCode).toBeNull();
+    expect(current.modelLock_codex).toBeNull();
+  });
+
   it("rejects delayed writes after deletion and keeps a new Portal ID usable", async () => {
     const created = await repo.upsertPortalManagedConnection(
       "portal-1", 7, "claude", () => portalValues("portal-1", "old-token", 7),

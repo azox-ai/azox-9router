@@ -453,7 +453,7 @@ export async function upsertPortalManagedConnection(externalId, tokenVersion, pr
       // any stale value inherited from an older or incorrectly-classified row.
       const merged = {
         ...existing,
-        ...values,
+        ...resetHealthStateOnActivation(existing, values),
         refreshToken: undefined,
         updatedAt: new Date().toISOString(),
       };

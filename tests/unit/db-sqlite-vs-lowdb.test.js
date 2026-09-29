@@ -358,6 +358,30 @@ describe("DB SQLite layer — public API parity", () => {
     expect((await sqliteDb.getModelAliases()).marker).toBe("before");
   });
 
+  it("importDb refuses Portal credentials from a snapshot without a live owner", async () => {
+    await sqliteDb.importDb({ providerConnections: [{
+      id: "imported-portal-credential", provider: "claude", authType: "oauth",
+      accessToken: "imported-access", refreshToken: "imported-refresh",
+      providerSpecificData: { portalExternalId: "unknown-portal", portalTokenVersion: 1 },
+    }] });
+    const connections = await sqliteDb.getProviderConnections({ provider: "claude" });
+    expect(connections.some((c) => c.providerSpecificData?.portalExternalId === "unknown-portal")).toBe(false);
+  });
+
+  it("importDb keeps live Portal credentials when another row reuses their database ID", async () => {
+    const current = await sqliteDb.upsertPortalManagedConnection("collision-portal", 2, "claude", () => ({
+      provider: "claude", authType: "oauth", accessToken: "live-access", isActive: true,
+      providerSpecificData: { portalExternalId: "collision-portal", portalTokenVersion: 2 },
+    }));
+    await expect(sqliteDb.importDb({ providerConnections: [{
+      id: current.connection.id, provider: "codex", authType: "oauth",
+      name: "unrelated", accessToken: "snapshot-access",
+    }] })).rejects.toThrow("Imported connection ID conflicts with a Portal-managed connection");
+    const after = await sqliteDb.getProviderConnectionById(current.connection.id);
+    expect(after.providerSpecificData.portalExternalId).toBe("collision-portal");
+    expect(after.accessToken).toBe("live-access");
+  });
+
   it("importDb does not roll back a live Portal access token", async () => {
     const current = await sqliteDb.upsertPortalManagedConnection("live-portal", 9, "claude", () => ({
       provider: "claude", authType: "oauth", accessToken: "current-token", isActive: true,
