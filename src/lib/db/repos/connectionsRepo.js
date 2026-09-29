@@ -507,8 +507,16 @@ export async function deleteProviderConnection(id) {
   const db = await getAdapter();
   let ok = false;
   db.transaction(() => {
-    const row = db.get(`SELECT provider FROM providerConnections WHERE id = ?`, [id]);
+    const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
     if (!row) return;
+    const externalId = rowToConn(row).providerSpecificData?.portalExternalId;
+    if (externalId) {
+      db.run(
+        `INSERT INTO kv(scope, key, value) VALUES(?, ?, 'deleted')
+         ON CONFLICT(scope, key) DO NOTHING`,
+        [PORTAL_DELETION_SCOPE, externalId]
+      );
+    }
     db.run(`DELETE FROM providerConnections WHERE id = ?`, [id]);
     reorderInTx(db, row.provider);
     ok = true;
@@ -518,9 +526,22 @@ export async function deleteProviderConnection(id) {
 
 export async function deleteProviderConnectionsByProvider(providerId) {
   const db = await getAdapter();
-  const before = db.get(`SELECT COUNT(*) AS n FROM providerConnections WHERE provider = ?`, [providerId]);
-  db.run(`DELETE FROM providerConnections WHERE provider = ?`, [providerId]);
-  return before?.n || 0;
+  let count = 0;
+  db.transaction(() => {
+    const rows = db.all(`SELECT * FROM providerConnections WHERE provider = ?`, [providerId]);
+    for (const row of rows) {
+      const externalId = rowToConn(row).providerSpecificData?.portalExternalId;
+      if (!externalId) continue;
+      db.run(
+        `INSERT INTO kv(scope, key, value) VALUES(?, ?, 'deleted')
+         ON CONFLICT(scope, key) DO NOTHING`,
+        [PORTAL_DELETION_SCOPE, externalId]
+      );
+    }
+    db.run(`DELETE FROM providerConnections WHERE provider = ?`, [providerId]);
+    count = rows.length;
+  });
+  return count;
 }
 
 export async function reorderProviderConnections(providerId) {

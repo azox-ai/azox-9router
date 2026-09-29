@@ -227,6 +227,28 @@ describe("Portal credential identity and monotonic version", () => {
     expect(await repo.getProviderConnections({ provider: "claude" })).toHaveLength(0);
   });
 
+  it("tombstones Portal-owned credentials deleted through the generic provider API", async () => {
+    const created = await repo.upsertPortalManagedConnection(
+      "portal-local-delete", 3, "claude", () => portalValues("portal-local-delete", "access", 3),
+    );
+    expect(await repo.deleteProviderConnection(created.connection.id)).toBe(true);
+    const replay = await repo.upsertPortalManagedConnection(
+      "portal-local-delete", 4, "claude", () => portalValues("portal-local-delete", "stale", 4),
+    );
+    expect(replay.status).toBe("deleted");
+  });
+
+  it("tombstones Portal identities removed by a provider-wide delete", async () => {
+    await repo.upsertPortalManagedConnection(
+      "portal-bulk", 1, "claude", () => portalValues("portal-bulk", "access", 1),
+    );
+    expect(await repo.deleteProviderConnectionsByProvider("claude")).toBe(1);
+    const replay = await repo.upsertPortalManagedConnection(
+      "portal-bulk", 2, "claude", () => portalValues("portal-bulk", "later", 2),
+    );
+    expect(replay.status).toBe("deleted");
+  });
+
   it("tombstones an ID even if DELETE beats the first PUT", async () => {
     expect(await repo.deletePortalManagedConnection("portal-early")).toBe(false);
     const replay = await repo.upsertPortalManagedConnection(
