@@ -2,6 +2,9 @@ import "open-sse/index.js";
 
 import {
   getProviderCredentials,
+  beginAccountMutationAttempt,
+  endAccountMutationAttempt,
+  recordAccountMutationSuccess,
   markAccountUnavailable,
   clearAccountError,
   extractApiKey,
@@ -313,6 +316,7 @@ async function handleSingleModelChat(
     // Use shared chatCore
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    const mutationAttempt = beginAccountMutationAttempt(credentials.connectionId, model);
     let result;
     try {
       result = await handleChatCore({
@@ -352,12 +356,18 @@ async function handleSingleModelChat(
           });
         },
         onRequestSuccess: async () => {
-          await clearAccountError(credentials.connectionId, credentials, model);
-          // "Consecutive" strikes: a success clears the breaker for this pair.
-          clearAntigravityStrikes(credentials.connectionId, model);
+          recordAccountMutationSuccess(mutationAttempt);
+          try {
+            await clearAccountError(credentials.connectionId, credentials, model, { mutationAttempt });
+            // "Consecutive" strikes: a success clears the breaker for this pair.
+            clearAntigravityStrikes(credentials.connectionId, model);
+          } finally {
+            endAccountMutationAttempt(mutationAttempt);
+          }
         }
       });
     } catch (error) {
+      endAccountMutationAttempt(mutationAttempt);
       emitGatewayAttempt(buildGatewayAttemptLog({
         monitoring,
         provider,
@@ -397,9 +407,14 @@ async function handleSingleModelChat(
 
     // Exhausted Antigravity model is blocked only in RAM cache until upstream resetAt.
     // Do not persist a modelLock_* for this path.
-    const shouldFallback = provider === "antigravity" && quotaResetMs
-      ? true
-      : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs)).shouldFallback;
+    let shouldFallback;
+    try {
+      shouldFallback = provider === "antigravity" && quotaResetMs
+        ? true
+        : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs, { mutationAttempt })).shouldFallback;
+    } finally {
+      endAccountMutationAttempt(mutationAttempt);
+    }
 
     if (shouldFallback) {
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);

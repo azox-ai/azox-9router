@@ -42,6 +42,38 @@ describe("Portal credential identity and monotonic version", () => {
     if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it("does not mark a late failed account attempt unavailable after a newer success", async () => {
+    const auth = await import("../../src/sse/services/auth.js");
+    const connection = await repo.createProviderConnection({
+      provider: "claude", authType: "oauth", email: "account@example.test", accessToken: "token",
+    });
+    const older = auth.beginAccountMutationAttempt(connection.id, "claude-sonnet-5");
+    const newer = auth.beginAccountMutationAttempt(connection.id, "claude-sonnet-5");
+    auth.recordAccountMutationSuccess(newer);
+    auth.endAccountMutationAttempt(newer);
+    const result = await auth.markAccountUnavailable(
+      connection.id, 429, "quota exhausted", "claude", "claude-sonnet-5", null,
+      { mutationAttempt: older },
+    );
+    auth.endAccountMutationAttempt(older);
+    expect(result.superseded).toBe(true);
+    expect((await repo.getProviderConnectionById(connection.id)).testStatus).not.toBe("unavailable");
+  });
+
+  it("checks a guarded connection update inside its transaction", async () => {
+    const connection = await repo.createProviderConnection({
+      provider: "claude", authType: "oauth", email: "account@example.test", accessToken: "original",
+    });
+    let allowed = true;
+    const updated = await repo.updateProviderConnection(connection.id, { accessToken: "fresh" }, {
+      shouldCommit: () => allowed,
+      beforeCommit: () => { allowed = false; },
+      afterCommit: () => { throw new Error("must not commit"); },
+    });
+    expect(updated).toBeNull();
+    expect((await repo.getProviderConnectionById(connection.id)).accessToken).toBe("original");
+  });
+
   it("never merges Portal accounts with direct-login or other Portal identities", async () => {
     const direct = await repo.createProviderConnection({
       provider: "claude", authType: "oauth", email: "same@example.test",
