@@ -79,7 +79,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Check for bypass patterns (warmup, skip, cc naming)
   const bypassResponse = handleBypassRequest(body, model, userAgent, ccFilterNaming);
-  if (bypassResponse) return bypassResponse;
+  if (bypassResponse) return { ...bypassResponse, bypass: true };
 
   const alias = PROVIDER_ID_TO_ALIAS[provider] || provider;
   const modelTargetFormat = getModelTargetFormat(alias, model);

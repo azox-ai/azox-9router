@@ -398,7 +398,12 @@ async function handleSingleModelChat(
       startTime: attemptStartedAt,
     }));
 
-    if (result.success) return result.response;
+    if (result.success) {
+      // Streaming success callbacks may finish later and release the attempt;
+      // bypass responses never enter that path, so release them here.
+      if (result.bypass) releaseMutationAttempt();
+      return result.response;
+    }
 
     // Antigravity 409/429: refresh live quota to get exact resetAt before locking
     let quotaResetMs = null;

@@ -86,6 +86,16 @@ describe("chat account mutation ordering", () => {
     expect(state.end).toHaveBeenCalledWith(second);
   });
 
+  it("releases an attempt when chatCore succeeds without its success callback", async () => {
+    const promise = handleChat(request());
+    const attempt = await waitForAttempt();
+    attempt.resolve({ success: true, bypass: true, response: Response.json({ bypass: true }) });
+    await promise;
+
+    const owner = state.begin.mock.results[0].value;
+    expect(state.end).toHaveBeenCalledWith(owner);
+  });
+
   it("does not release an attempt twice when success callback precedes a failed result", async () => {
     const promise = handleChat(request());
     const attempt = await waitForAttempt();
