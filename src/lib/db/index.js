@@ -116,6 +116,10 @@ export async function importDb(payload) {
     }
 
     for (const c of payload.providerConnections || []) {
+      const externalId = c.providerSpecificData?.portalExternalId;
+      if (externalId && db.get(`SELECT value FROM kv WHERE scope = ? AND key = ?`, ["portalDeletedExternalIds", externalId])) {
+        continue;
+      }
       const { id, provider, authType, name, email, priority, isActive, createdAt, updatedAt, ...rest } = c;
       db.run(
         `INSERT OR REPLACE INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

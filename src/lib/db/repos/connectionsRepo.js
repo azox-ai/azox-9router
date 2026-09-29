@@ -465,13 +465,16 @@ export async function deletePortalManagedConnection(externalId) {
        ON CONFLICT(scope, key) DO NOTHING`,
       [PORTAL_DELETION_SCOPE, externalId]
     );
-    const rows = db.all(`SELECT * FROM providerConnections`);
-    const connection = rows.map(rowToConn).find((row) =>
+    const connections = db.all(`SELECT * FROM providerConnections`).map(rowToConn).filter((row) =>
       row.providerSpecificData?.portalExternalId === externalId
     );
-    if (!connection) return;
-    db.run(`DELETE FROM providerConnections WHERE id = ?`, [connection.id]);
-    reorderInTx(db, connection.provider);
+    if (connections.length === 0) return;
+    for (const connection of connections) {
+      db.run(`DELETE FROM providerConnections WHERE id = ?`, [connection.id]);
+    }
+    for (const provider of new Set(connections.map((connection) => connection.provider))) {
+      reorderInTx(db, provider);
+    }
     deleted = true;
   });
   return deleted;

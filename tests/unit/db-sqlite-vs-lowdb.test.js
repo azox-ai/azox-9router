@@ -358,6 +358,23 @@ describe("DB SQLite layer — public API parity", () => {
     expect((await sqliteDb.getModelAliases()).marker).toBe("before");
   });
 
+  it("importDb does not restore a deleted Portal identity", async () => {
+    const portalRow = {
+      id: "restored-portal-row", provider: "claude", authType: "oauth", name: "restored",
+      email: "restored@example.test", accessToken: "stale",
+      providerSpecificData: { portalExternalId: "deleted-portal", portalTokenVersion: 3 },
+    };
+    await sqliteDb.upsertPortalManagedConnection("deleted-portal", 1, "claude", () => ({
+      provider: "claude", authType: "oauth", accessToken: "current", isActive: true,
+      providerSpecificData: { portalExternalId: "deleted-portal", portalTokenVersion: 1 },
+    }));
+    await sqliteDb.deletePortalManagedConnection("deleted-portal");
+    await sqliteDb.importDb({ providerConnections: [portalRow] });
+
+    const connections = await sqliteDb.getProviderConnections({ provider: "claude" });
+    expect(connections.some((c) => c.providerSpecificData?.portalExternalId === "deleted-portal")).toBe(false);
+  });
+
   it("pricing: user pricing merged with constants", async () => {
     await sqliteDb.updatePricing({ openai: { "gpt-test": { input: 1, output: 2 } } });
     const p = await sqliteDb.getPricing();

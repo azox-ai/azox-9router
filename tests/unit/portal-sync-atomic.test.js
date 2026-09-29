@@ -153,6 +153,13 @@ describe("Portal credential identity and monotonic version", () => {
     expect(replacement.connection.accessToken).toBe("new-token");
   });
 
+  it("removes every duplicate row for a deleted Portal identity", async () => {
+    await repo.createProviderConnection(portalValues("portal-dup", "first", 1));
+    await repo.createProviderConnection({ ...portalValues("portal-dup", "second", 1), email: "other@example.test" });
+    expect(await repo.deletePortalManagedConnection("portal-dup")).toBe(true);
+    expect(await repo.getProviderConnections({ provider: "claude" })).toHaveLength(0);
+  });
+
   it("tombstones an ID even if DELETE beats the first PUT", async () => {
     expect(await repo.deletePortalManagedConnection("portal-early")).toBe(false);
     const replay = await repo.upsertPortalManagedConnection(

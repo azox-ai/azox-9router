@@ -317,6 +317,12 @@ async function handleSingleModelChat(
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
     const mutationAttempt = beginAccountMutationAttempt(credentials.connectionId, model);
+    let mutationReleased = false;
+    const releaseMutationAttempt = () => {
+      if (mutationReleased) return;
+      mutationReleased = true;
+      endAccountMutationAttempt(mutationAttempt);
+    };
     let result;
     try {
       result = await handleChatCore({
@@ -362,12 +368,12 @@ async function handleSingleModelChat(
             // "Consecutive" strikes: a success clears the breaker for this pair.
             clearAntigravityStrikes(credentials.connectionId, model);
           } finally {
-            endAccountMutationAttempt(mutationAttempt);
+            releaseMutationAttempt();
           }
         }
       });
     } catch (error) {
-      endAccountMutationAttempt(mutationAttempt);
+      releaseMutationAttempt();
       emitGatewayAttempt(buildGatewayAttemptLog({
         monitoring,
         provider,
@@ -413,7 +419,7 @@ async function handleSingleModelChat(
         ? true
         : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs, { mutationAttempt })).shouldFallback;
     } finally {
-      endAccountMutationAttempt(mutationAttempt);
+      releaseMutationAttempt();
     }
 
     if (shouldFallback) {

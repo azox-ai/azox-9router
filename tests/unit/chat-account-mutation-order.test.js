@@ -85,4 +85,15 @@ describe("chat account mutation ordering", () => {
     expect(state.end).toHaveBeenCalledWith(first);
     expect(state.end).toHaveBeenCalledWith(second);
   });
+
+  it("does not release an attempt twice when success callback precedes a failed result", async () => {
+    const promise = handleChat(request());
+    const attempt = await waitForAttempt();
+    await attempt.options.onRequestSuccess();
+    attempt.resolve({ success: false, status: 502, error: "bad stream", response: Response.json({ error: "bad stream" }, { status: 502 }) });
+    await promise;
+
+    const owner = state.begin.mock.results[0].value;
+    expect(state.end.mock.calls.filter(([value]) => value === owner)).toHaveLength(1);
+  });
 });
