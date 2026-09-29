@@ -13,6 +13,12 @@ const OPTIONAL_FIELDS = [
 const MODEL_LOCK_PREFIX = "modelLock_";
 const PORTAL_DELETION_SCOPE = "portalDeletedExternalIds";
 
+function withoutPortalIdentity(data) {
+  if (!data.providerSpecificData || typeof data.providerSpecificData !== "object") return data;
+  const { portalExternalId, portalTokenVersion, ...providerSpecificData } = data.providerSpecificData;
+  return { ...data, providerSpecificData };
+}
+
 function resetHealthStateOnActivation(existing, patch) {
   if (patch?.testStatus !== "active") return patch;
 
@@ -133,7 +139,8 @@ function reorderInTx(db, providerId) {
   });
 }
 
-export function createProviderConnectionInTransaction(db, data, { deduplicate = true } = {}) {
+export function createProviderConnectionInTransaction(db, data, { deduplicate = true, portalSync = false } = {}) {
+  data = portalSync ? data : withoutPortalIdentity(data);
   const now = new Date().toISOString();
 
   const isApikey = data.authType === "apikey" && !!data.name;
@@ -239,6 +246,7 @@ export function createProviderConnectionInTransaction(db, data, { deduplicate = 
 }
 
 export async function createProviderConnection(data, options = {}) {
+  data = withoutPortalIdentity(data);
   const db = await getAdapter();
   if (options.shouldCommit && !options.shouldCommit()) return null;
   const now = new Date().toISOString();
@@ -462,7 +470,7 @@ export async function upsertPortalManagedConnection(externalId, tokenVersion, pr
       return;
     }
 
-    const connection = createProviderConnectionInTransaction(db, values, { deduplicate: false });
+    const connection = createProviderConnectionInTransaction(db, values, { deduplicate: false, portalSync: true });
     outcome = { status: "created", connection, tokenVersion };
   });
 

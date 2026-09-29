@@ -69,6 +69,18 @@ describe("Portal credential identity and monotonic version", () => {
     expect(await repo.getProviderConnections({ provider: "claude" })).toHaveLength(0);
   });
 
+  it("does not let ordinary connection creation claim a Portal identity", async () => {
+    const direct = await repo.createProviderConnection({
+      provider: "claude", authType: "apikey", name: "direct-key", apiKey: "dummy",
+      providerSpecificData: { portalExternalId: "portal-claimed", portalTokenVersion: 9000 },
+    });
+    expect(direct.providerSpecificData?.portalExternalId).toBeUndefined();
+    const synced = await repo.upsertPortalManagedConnection(
+      "portal-claimed", 1, "claude", () => portalValues("portal-claimed", "portal-token", 1),
+    );
+    expect(synced.status).toBe("created");
+  });
+
   it("keeps Portal ownership when a regular connection update changes metadata", async () => {
     const original = await repo.upsertPortalManagedConnection(
       "portal-owned", 4, "claude", () => portalValues("portal-owned", "portal-token", 4),
@@ -198,8 +210,19 @@ describe("Portal credential identity and monotonic version", () => {
   });
 
   it("removes every duplicate row for a deleted Portal identity", async () => {
-    await repo.createProviderConnection(portalValues("portal-dup", "first", 1));
-    await repo.createProviderConnection({ ...portalValues("portal-dup", "second", 1), email: "other@example.test" });
+    await repo.upsertPortalManagedConnection(
+      "portal-dup", 1, "claude", () => portalValues("portal-dup", "first", 1),
+    );
+    const duplicate = await repo.createProviderConnection({
+      ...portalValues("portal-dup", "second", 1), email: "other@example.test",
+    });
+    // Simulate an existing duplicate from an older build, before identity was reserved.
+    fixture.adapter.run(`UPDATE providerConnections SET data = ? WHERE id = ?`, [
+      JSON.stringify({
+        accessToken: "second",
+        providerSpecificData: { portalExternalId: "portal-dup", portalTokenVersion: 1 },
+      }), duplicate.id,
+    ]);
     expect(await repo.deletePortalManagedConnection("portal-dup")).toBe(true);
     expect(await repo.getProviderConnections({ provider: "claude" })).toHaveLength(0);
   });
