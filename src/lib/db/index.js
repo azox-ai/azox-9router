@@ -11,6 +11,7 @@ export {
 export {
   getProviderConnections, getProviderConnectionById,
   createProviderConnection, updateProviderConnection,
+  upsertPortalManagedConnection, deletePortalManagedConnection,
   deleteProviderConnection, deleteProviderConnectionsByProvider,
   reorderProviderConnections, cleanupProviderConnections,
 } from "./repos/connectionsRepo.js";
@@ -35,7 +36,7 @@ export {
 // Combos
 export {
   getCombos, getComboById, getComboByName,
-  createCombo, updateCombo, deleteCombo,
+  createCombo, updateCombo, deleteCombo, importComboItems,
 } from "./repos/combosRepo.js";
 
 // Aliases (model + custom + mitm)
@@ -100,6 +101,18 @@ export async function importDb(payload) {
   const db = await getAdapter();
 
   db.transaction(() => {
+    // Portal is the sole access-token authority: an exported snapshot cannot
+    // roll back a live Portal token or revive a revoked identity.
+    const livePortalConnections = db.all(`SELECT * FROM providerConnections`).filter((row) =>
+      parseJson(row.data, {}).providerSpecificData?.portalExternalId
+    );
+    const livePortalRowIds = new Set(livePortalConnections.map((row) => row.id));
+    const importedConnections = payload.providerConnections || [];
+    if (importedConnections.some((connection) =>
+      !connection.providerSpecificData?.portalExternalId && livePortalRowIds.has(connection.id)
+    )) {
+      throw new Error("Imported connection ID conflicts with a Portal-managed connection");
+    }
     // Wipe all tables (keep _meta)
     db.run(`DELETE FROM settings`);
     db.run(`DELETE FROM providerConnections`);
@@ -114,11 +127,22 @@ export async function importDb(payload) {
       db.run(`INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`, [stringifyJson(payload.settings)]);
     }
 
-    for (const c of payload.providerConnections || []) {
+    for (const c of importedConnections) {
+      // Only the Portal sync endpoint may create or rotate Portal credentials.
+      // Imported snapshots may hold expired access or even a refresh token.
+      if (c.providerSpecificData?.portalExternalId) continue;
       const { id, provider, authType, name, email, priority, isActive, createdAt, updatedAt, ...rest } = c;
       db.run(
         `INSERT OR REPLACE INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [id, provider, authType || "oauth", name || null, email || null, priority || null, isActive === false ? 0 : 1, stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
+      );
+    }
+    for (const row of livePortalConnections) {
+      db.run(
+        `INSERT INTO providerConnections(id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [row.id, row.provider, row.authType, row.name, row.email, row.priority, row.isActive,
+          row.data, row.createdAt, row.updatedAt]
       );
     }
     for (const n of payload.providerNodes || []) {
