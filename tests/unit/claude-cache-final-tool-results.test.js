@@ -35,7 +35,8 @@ const loop = () => ({
 describe("prepareClaudeRequest: a tool loop's final tool results", () => {
   it("get the 4th breakpoint, after the last assistant turn's", () => {
     const out = prepareClaudeRequest(loop(), "claude");
-    expect(markers(out)).toEqual(["system[0]", "tools[1]", "messages[3].1", "messages[4].1"]);
+    // AZOX adds a Claude identity block before the supplied system prompt.
+    expect(markers(out)).toEqual(["system[1]", "tools[1]", "messages[3].1", "messages[4].1"]);
     expect(out.messages[4].content[1].cache_control).toEqual({ type: "ephemeral" });
   });
 
@@ -43,14 +44,14 @@ describe("prepareClaudeRequest: a tool loop's final tool results", () => {
     const body = loop();
     body.messages.push({ role: "assistant", content: [text("Done.")] }, { role: "user", content: [text("Thanks, and the tests?")] });
     const out = prepareClaudeRequest(body, "claude");
-    expect(markers(out)).toEqual(["system[0]", "tools[1]", "messages[5].0"]);
+    expect(markers(out)).toEqual(["system[1]", "tools[1]", "messages[5].0"]);
   });
 
   it("need no tools array to be marked", () => {
     const body = loop();
     delete body.tools;
     const out = prepareClaudeRequest(body, "claude");
-    expect(markers(out)).toEqual(["system[0]", "messages[3].1", "messages[4].1"]);
+    expect(markers(out)).toEqual(["system[1]", "messages[3].1", "messages[4].1"]);
   });
 
   it("never take the request past four markers", () => {

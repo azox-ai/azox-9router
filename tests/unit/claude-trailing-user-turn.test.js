@@ -58,13 +58,16 @@ describe("trailing user turn survives empty-message cleanup", () => {
     expect(out.messages.at(-1).role).toBe("user");
   });
 
-  it("leaves intentional client prefill (last turn is assistant) untouched", () => {
+  it("continues a trailing assistant turn by default and preserves it only on explicit opt-in", () => {
     const body = { model: "claude-opus-4-5", max_tokens: 100, messages: [
       { role: "user", content: "hi" },
       { role: "assistant", content: [{ type: "text", text: "Sure:" }] },
     ] };
-    expect(roles(prepareClaudeRequest(structuredClone(body), "claude"))).toEqual(["user", "assistant"]);
-    expect(roles(normalizeClaudePassthrough(structuredClone(body), "claude-opus-4-5"))).toEqual(["user", "assistant"]);
+    expect(roles(prepareClaudeRequest(structuredClone(body), "claude"))).toEqual(["user", "assistant", "user"]);
+    expect(roles(normalizeClaudePassthrough(structuredClone(body), "claude-opus-4-5"))).toEqual(["user", "assistant", "user"]);
+    const preserve = { "x-9router-assistant-prefill": "preserve" };
+    expect(roles(prepareClaudeRequest(structuredClone(body), "claude", null, null, preserve))).toEqual(["user", "assistant"]);
+    expect(roles(normalizeClaudePassthrough(structuredClone(body), "claude-opus-4-5", preserve))).toEqual(["user", "assistant"]);
   });
 
   it("does not append anything when the last user turn has content", () => {
