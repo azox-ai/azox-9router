@@ -3,14 +3,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getProviderConnections: vi.fn(),
   upsertPortalManagedConnection: vi.fn(),
-  deleteProviderConnection: vi.fn(),
+  deletePortalManagedConnection: vi.fn(),
 }));
 
 vi.mock("@/models", () => ({
   getProviderConnections: mocks.getProviderConnections,
-  deleteProviderConnection: mocks.deleteProviderConnection,
 }));
-vi.mock("@/lib/db/index", () => ({ upsertPortalManagedConnection: mocks.upsertPortalManagedConnection }));
+vi.mock("@/lib/db/index", () => ({
+  upsertPortalManagedConnection: mocks.upsertPortalManagedConnection,
+  deletePortalManagedConnection: mocks.deletePortalManagedConnection,
+}));
 vi.mock("next/server", () => ({ NextResponse: { json: (body, init) => Response.json(body, init) } }));
 
 const { PUT, GET, DELETE } = await import("../../src/app/api/internal/portal/connections/[externalId]/route.js");
@@ -89,11 +91,18 @@ describe("portal connection sync route", () => {
     expect(await response.json()).toMatchObject({ id: "router-id", tokenVersion: 7 });
   });
 
+  it("rejects a delayed PUT for a deleted Portal identity", async () => {
+    mocks.upsertPortalManagedConnection.mockResolvedValueOnce({ status: "deleted" });
+    const response = await PUT(request("PUT", input), context);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "Portal identity was deleted" });
+  });
+
   it("returns token-safe status and deletes managed connection", async () => {
     mocks.getProviderConnections.mockResolvedValue([{
       ...connection, accessToken: "secret", refreshToken: "secret",
     }]);
-    mocks.deleteProviderConnection.mockResolvedValue(true);
+    mocks.deletePortalManagedConnection.mockResolvedValue(true);
 
     const status = await GET(request("GET"), context);
     expect(await status.json()).toEqual({
@@ -102,6 +111,6 @@ describe("portal connection sync route", () => {
     });
     const removed = await DELETE(request("DELETE"), context);
     expect(removed.status).toBe(204);
-    expect(mocks.deleteProviderConnection).toHaveBeenCalledWith("router-id");
+    expect(mocks.deletePortalManagedConnection).toHaveBeenCalledWith("account-1");
   });
 });
