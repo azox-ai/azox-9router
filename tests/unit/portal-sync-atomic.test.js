@@ -27,12 +27,88 @@ describe("Portal credential identity and monotonic version", () => {
       name TEXT, email TEXT, priority INTEGER, isActive INTEGER DEFAULT 1,
       data TEXT NOT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
     );`);
+    fixture.adapter.exec(`CREATE TABLE kv (
+      scope TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+      PRIMARY KEY (scope, key)
+    );`);
   });
 
-  beforeEach(() => fixture.adapter.exec("DELETE FROM providerConnections;"));
+  beforeEach(() => {
+    fixture.adapter.exec("DELETE FROM providerConnections;");
+    fixture.adapter.exec("DELETE FROM kv;");
+  });
   afterAll(() => {
     fixture.adapter?.close();
     if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("does not mark a late failed account attempt unavailable after a newer success", async () => {
+    const auth = await import("../../src/sse/services/auth.js");
+    const connection = await repo.createProviderConnection({
+      provider: "claude", authType: "oauth", email: "account@example.test", accessToken: "token",
+    });
+    const older = auth.beginAccountMutationAttempt(connection.id, "claude-sonnet-5");
+    const newer = auth.beginAccountMutationAttempt(connection.id, "claude-sonnet-5");
+    auth.recordAccountMutationSuccess(newer);
+    auth.endAccountMutationAttempt(newer);
+    const result = await auth.markAccountUnavailable(
+      connection.id, 429, "quota exhausted", "claude", "claude-sonnet-5", null,
+      { mutationAttempt: older },
+    );
+    auth.endAccountMutationAttempt(older);
+    expect(result.superseded).toBe(true);
+    expect((await repo.getProviderConnectionById(connection.id)).testStatus).not.toBe("unavailable");
+  });
+
+  it("does not persist a revoked OAuth callback after adapter acquisition", async () => {
+    let allowed = true;
+    const created = await repo.createProviderConnection({
+      provider: "claude", authType: "oauth", email: "revoked@example.test", accessToken: "stale",
+    }, { shouldCommit: () => allowed = false });
+    expect(created).toBeNull();
+    expect(await repo.getProviderConnections({ provider: "claude" })).toHaveLength(0);
+  });
+
+  it("does not let ordinary connection creation claim a Portal identity", async () => {
+    const direct = await repo.createProviderConnection({
+      provider: "claude", authType: "apikey", name: "direct-key", apiKey: "dummy",
+      providerSpecificData: { portalExternalId: "portal-claimed", portalTokenVersion: 9000 },
+    });
+    expect(direct.providerSpecificData?.portalExternalId).toBeUndefined();
+    const synced = await repo.upsertPortalManagedConnection(
+      "portal-claimed", 1, "claude", () => portalValues("portal-claimed", "portal-token", 1),
+    );
+    expect(synced.status).toBe("created");
+  });
+
+  it("keeps Portal ownership when a regular connection update changes metadata", async () => {
+    const original = await repo.upsertPortalManagedConnection(
+      "portal-owned", 4, "claude", () => portalValues("portal-owned", "portal-token", 4),
+    );
+    const updated = await repo.updateProviderConnection(original.connection.id, {
+      providerSpecificData: { portalExternalId: null, portalTokenVersion: 1, label: "renamed" },
+      accessToken: "unauthorized-replacement",
+      refreshToken: "router-refresh-token",
+    });
+    expect(updated.providerSpecificData.portalExternalId).toBe("portal-owned");
+    expect(updated.providerSpecificData.portalTokenVersion).toBe(4);
+    expect(updated.accessToken).toBe("portal-token");
+    expect(updated.refreshToken).toBeUndefined();
+    expect(await repo.deletePortalManagedConnection("portal-owned")).toBe(true);
+  });
+
+  it("checks a guarded connection update inside its transaction", async () => {
+    const connection = await repo.createProviderConnection({
+      provider: "claude", authType: "oauth", email: "account@example.test", accessToken: "original",
+    });
+    let allowed = true;
+    const updated = await repo.updateProviderConnection(connection.id, { accessToken: "fresh" }, {
+      shouldCommit: () => allowed,
+      beforeCommit: () => { allowed = false; },
+      afterCommit: () => { throw new Error("must not commit"); },
+    });
+    expect(updated).toBeNull();
+    expect((await repo.getProviderConnectionById(connection.id)).accessToken).toBe("original");
   });
 
   it("never merges Portal accounts with direct-login or other Portal identities", async () => {
@@ -89,6 +165,165 @@ describe("Portal credential identity and monotonic version", () => {
       accessToken: "portal-access", testStatus: "active", errorCode: null, lastError: null,
       providerSpecificData: { portalExternalId: "external-1", portalTokenVersion: 2 },
     });
+  });
+
+  it("does not let an old-token success clear a newer Portal lock", async () => {
+    const auth = await import("../../src/sse/services/auth.js");
+    const created = await repo.upsertPortalManagedConnection(
+      "portal-success-race", 1, "claude", () => portalValues("portal-success-race", "old-token", 1),
+    );
+    await repo.upsertPortalManagedConnection(
+      "portal-success-race", 2, "claude", () => portalValues("portal-success-race", "new-token", 2),
+    );
+    await repo.updateProviderConnection(created.connection.id, {
+      testStatus: "unavailable", lastError: "new-token failure",
+      modelLock_test: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await auth.clearAccountError(created.connection.id, created.connection, "test", {
+      reloadCurrent: true, expectedPortalTokenVersion: 1,
+    });
+    const current = await repo.getProviderConnectionById(created.connection.id);
+    expect(current.testStatus).toBe("unavailable");
+    expect(current.modelLock_test).toBeTruthy();
+  });
+
+  it("does not route a stale health update to the rotated Portal credential", async () => {
+    const auth = await import("../../src/sse/services/auth.js");
+    const created = await repo.upsertPortalManagedConnection(
+      "portal-routed", 1, "claude", () => portalValues("portal-routed", "old-token", 1),
+    );
+    await repo.upsertPortalManagedConnection(
+      "portal-routed", 2, "claude", () => portalValues("portal-routed", "new-token", 2),
+    );
+    const result = await auth.markAccountUnavailable(
+      created.connection.id, 429, "quota", "claude", "test", null,
+      { expectedPortalTokenVersion: 1 },
+    );
+    expect(result.superseded).toBe(true);
+    const current = await repo.getProviderConnectionById(created.connection.id);
+    expect(current.testStatus).toBe("active");
+    expect(current.modelLock_test).toBeUndefined();
+  });
+
+  it("rejects a late health lock from the previous Portal token version", async () => {
+    const created = await repo.upsertPortalManagedConnection(
+      "portal-race", 1, "claude", () => portalValues("portal-race", "old-token", 1),
+    );
+    await repo.upsertPortalManagedConnection(
+      "portal-race", 2, "claude", () => portalValues("portal-race", "new-token", 2),
+    );
+    const guarded = await repo.updateProviderConnection(created.connection.id, {
+      testStatus: "unavailable", modelLock_test: new Date(Date.now() + 60_000).toISOString(),
+    }, { expectedPortalTokenVersion: 1 });
+    expect(guarded).toBeNull();
+    const current = await repo.getProviderConnectionById(created.connection.id);
+    expect(current.accessToken).toBe("new-token");
+    expect(current.testStatus).toBe("active");
+    expect(current.modelLock_test).toBeUndefined();
+  });
+
+  it("clears stale model locks when Portal pushes a newer access token", async () => {
+    const created = await repo.upsertPortalManagedConnection(
+      "portal-refresh", 1, "codex", () => ({ ...portalValues("portal-refresh", "old-token", 1), provider: "codex" }),
+    );
+    await repo.updateProviderConnection(created.connection.id, {
+      testStatus: "unavailable", errorCode: "rate_limit", lastError: "old error",
+      modelLock_codex: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const replacement = await repo.upsertPortalManagedConnection(
+      "portal-refresh", 2, "codex", () => ({ ...portalValues("portal-refresh", "new-token", 2), provider: "codex" }),
+    );
+    expect(replacement.status).toBe("updated");
+    const current = await repo.getProviderConnectionById(created.connection.id);
+    expect(current.accessToken).toBe("new-token");
+    expect(current.testStatus).toBe("active");
+    expect(current.errorCode).toBeNull();
+    expect(current.modelLock_codex).toBeNull();
+  });
+
+  it("rejects delayed writes after deletion and keeps a new Portal ID usable", async () => {
+    const created = await repo.upsertPortalManagedConnection(
+      "portal-1", 7, "claude", () => portalValues("portal-1", "old-token", 7),
+    );
+    expect(await repo.deletePortalManagedConnection("portal-1")).toBe(true);
+    expect(await repo.getProviderConnectionById(created.connection.id)).toBeNull();
+
+    for (const version of [7, 8]) {
+      const replay = await repo.upsertPortalManagedConnection(
+        "portal-1", version, "claude", () => portalValues("portal-1", "replayed-token", version),
+      );
+      expect(replay.status).toBe("deleted");
+    }
+    expect(await repo.getProviderConnections({ provider: "claude" })).toHaveLength(0);
+    expect(await repo.deletePortalManagedConnection("portal-1")).toBe(false);
+
+    const replacement = await repo.upsertPortalManagedConnection(
+      "portal-2", 1, "claude", () => portalValues("portal-2", "new-token", 1),
+    );
+    expect(replacement.status).toBe("created");
+    expect(replacement.connection.accessToken).toBe("new-token");
+  });
+
+  it("removes every duplicate row for a deleted Portal identity", async () => {
+    await repo.upsertPortalManagedConnection(
+      "portal-dup", 1, "claude", () => portalValues("portal-dup", "first", 1),
+    );
+    const duplicate = await repo.createProviderConnection({
+      ...portalValues("portal-dup", "second", 1), email: "other@example.test",
+    });
+    // Simulate an existing duplicate from an older build, before identity was reserved.
+    fixture.adapter.run(`UPDATE providerConnections SET data = ? WHERE id = ?`, [
+      JSON.stringify({
+        accessToken: "second",
+        providerSpecificData: { portalExternalId: "portal-dup", portalTokenVersion: 1 },
+      }), duplicate.id,
+    ]);
+    expect(await repo.deletePortalManagedConnection("portal-dup")).toBe(true);
+    expect(await repo.getProviderConnections({ provider: "claude" })).toHaveLength(0);
+  });
+
+  it("tombstones Portal-owned credentials deleted through the generic provider API", async () => {
+    const created = await repo.upsertPortalManagedConnection(
+      "portal-local-delete", 3, "claude", () => portalValues("portal-local-delete", "access", 3),
+    );
+    expect(await repo.deleteProviderConnection(created.connection.id)).toBe(true);
+    const replay = await repo.upsertPortalManagedConnection(
+      "portal-local-delete", 4, "claude", () => portalValues("portal-local-delete", "stale", 4),
+    );
+    expect(replay.status).toBe("deleted");
+  });
+
+  it("tombstones Portal identities removed by a provider-wide delete", async () => {
+    await repo.upsertPortalManagedConnection(
+      "portal-bulk", 1, "claude", () => portalValues("portal-bulk", "access", 1),
+    );
+    expect(await repo.deleteProviderConnectionsByProvider("claude")).toBe(1);
+    const replay = await repo.upsertPortalManagedConnection(
+      "portal-bulk", 2, "claude", () => portalValues("portal-bulk", "later", 2),
+    );
+    expect(replay.status).toBe("deleted");
+  });
+
+  it("tombstones an ID even if DELETE beats the first PUT", async () => {
+    expect(await repo.deletePortalManagedConnection("portal-early")).toBe(false);
+    const replay = await repo.upsertPortalManagedConnection(
+      "portal-early", 1, "claude", () => portalValues("portal-early", "late-token", 1),
+    );
+    expect(replay.status).toBe("deleted");
+    expect(await repo.getProviderConnections({ provider: "claude" })).toHaveLength(0);
+  });
+
+  it("retains the deletion tombstone across database reopening", async () => {
+    await repo.upsertPortalManagedConnection(
+      "portal-3", 2, "codex", () => ({ ...portalValues("portal-3", "token", 2), provider: "codex" }),
+    );
+    expect(await repo.deletePortalManagedConnection("portal-3")).toBe(true);
+    fixture.adapter.close();
+    fixture.adapter = await createSqlJsAdapter(path.join(tempDir, "fixture.sqlite"));
+    const replay = await repo.upsertPortalManagedConnection(
+      "portal-3", 3, "codex", () => ({ ...portalValues("portal-3", "replayed", 3), provider: "codex" }),
+    );
+    expect(replay.status).toBe("deleted");
   });
 
   it("rejects stale and equal version updates without changing stored token", async () => {

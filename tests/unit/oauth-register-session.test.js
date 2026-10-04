@@ -481,6 +481,26 @@ describe("OAuth proxy session registration", () => {
     }
   });
 
+  it("stops polling after an unrecoverable post-exchange failure without echoing provider details", async () => {
+    mocks.pollForToken.mockReset().mockResolvedValueOnce({
+      success: false,
+      error: "exchange_failed",
+      errorDescription: "client_secret=private-value",
+      fatal: true,
+    });
+    const response = await POST(
+      new Request("https://router.example/api/oauth/github/poll", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ deviceCode: "one-shot-code" }),
+      }),
+      { params: Promise.resolve({ provider: "github", action: "poll" }) },
+    );
+    const body = await response.json();
+    expect(body).toMatchObject({ success: false, pending: false, fatal: true });
+    expect(JSON.stringify(body)).not.toContain("private-value");
+  });
+
   it("maps device-poll error payloads to fixed public values", async () => {
     const reflectedSecret = "device_code=device-secret client_secret=poll-secret";
     mocks.pollForToken.mockReset().mockResolvedValueOnce({

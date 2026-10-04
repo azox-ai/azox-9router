@@ -267,6 +267,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     ? excludeConnectionIds
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
+  const requestedModel = options?.requestedModel || model;
   const signal = options?.signal || null;
   // Acquire mutex to prevent race conditions
   const currentMutex = selectionMutex;
@@ -329,6 +330,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
+      const enabled = c.providerSpecificData?.enabledModels;
+      if (providerId === "codex" && Array.isArray(enabled) && enabled.length && requestedModel && !enabled.includes(requestedModel)) return false;
       // Antigravity: skip if live quota exhausted for this model
       if (isAntigravity && model && antigravityQuotaCache) {
         const quota = antigravityQuotaCache.get(c.id)?.[model];
@@ -516,7 +519,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       : Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
     newBackoffLevel = 0;
   } else {
-    ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel));
+    ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel, resolveProviderId(provider)));
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
   const routingResult = { shouldFallback: true, cooldownMs };
@@ -561,8 +564,11 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     options?.afterCommit?.();
   } : null;
 
-  await updateConnectionWithSignal(connectionId, update, signal, shouldCommit, beforeCommit, afterCommit);
-  if (shouldCommit && !shouldCommit()) return { ...routingResult, superseded: true };
+  const updated = await updateConnectionWithSignal(
+    connectionId, update, signal, shouldCommit, beforeCommit, afterCommit,
+    options?.expectedPortalTokenVersion,
+  );
+  if (updated === null || (shouldCommit && !shouldCommit())) return { ...routingResult, superseded: true };
 
   const lockKey = Object.keys(lockUpdate)[0];
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
@@ -652,6 +658,8 @@ export async function clearAccountError(connectionId, currentConnection, model =
     null,
     combineCommitPredicates(shouldCommit, hasUpdates),
     beforeCommit,
+    null,
+    options?.expectedPortalTokenVersion,
   );
 }
 
@@ -662,6 +670,7 @@ async function updateConnectionWithSignal(
   shouldCommit = null,
   beforeCommit = null,
   afterCommit = null,
+  expectedPortalTokenVersion = undefined,
 ) {
   throwIfAborted(signal);
   if (shouldCommit && !shouldCommit()) return null;
@@ -670,6 +679,7 @@ async function updateConnectionWithSignal(
     ...(shouldCommit ? { shouldCommit } : {}),
     ...(beforeCommit ? { beforeCommit } : {}),
     ...(afterCommit ? { afterCommit } : {}),
+    ...(expectedPortalTokenVersion !== undefined ? { expectedPortalTokenVersion } : {}),
   };
   const result = Object.keys(guardedOptions).length > 0
     ? await updateProviderConnection(connectionId, updates, guardedOptions)

@@ -55,6 +55,12 @@ const adapter = {
     if (/SELECT \* FROM providerConnections WHERE id/i.test(sql)) {
       return state.connections.get(params[0]) || null;
     }
+    if (/SELECT MAX\(priority\) AS m FROM providerConnections WHERE provider/i.test(sql)) {
+      const priorities = [...state.connections.values()]
+        .filter((row) => row.provider === params[0])
+        .map((row) => row.priority || 0);
+      return { m: priorities.length ? Math.max(...priorities) : null };
+    }
     throw new Error(`Unexpected SQL in fixture: ${sql}`);
   },
   all(sql, params) {
