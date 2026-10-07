@@ -121,7 +121,8 @@ function openAICompletionToResponses(responseBody, customToolNames = null) {
   }
 
   const usage = responseBody.usage || {};
-  const status = choice.finish_reason === "tool_calls" ? "completed" : (choice.finish_reason === "stop" ? "completed" : (choice.finish_reason || "completed"));
+  const incomplete = choice.finish_reason === "length" || choice.finish_reason === "max_tokens";
+  const status = incomplete ? "incomplete" : "completed";
 
   return {
     id: `resp_${responseBody.id || ""}`.replace(/^resp_chatcmpl-/, "resp_"),
@@ -129,6 +130,7 @@ function openAICompletionToResponses(responseBody, customToolNames = null) {
     created_at: responseBody.created || Math.floor(Date.now() / 1000),
     model: responseBody.model || "unknown",
     status,
+    ...(incomplete ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
     background: false,
     error: null,
     output,
@@ -144,7 +146,11 @@ function openAICompletionToResponses(responseBody, customToolNames = null) {
  * Translate non-streaming response body from provider format → OpenAI format.
  */
 export function translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames = null) {
-  if (targetFormat === sourceFormat) return responseBody;
+  if (targetFormat === sourceFormat) {
+    return sourceFormat === FORMATS.OPENAI_RESPONSES && responseBody?.choices?.[0]
+      ? openAICompletionToResponses(responseBody, customToolNames)
+      : responseBody;
+  }
   // Provider responded in OpenAI Chat Completions shape but the client speaks
   // Responses API — convert so tool_calls/text surface as Responses `output`.
   if (targetFormat === FORMATS.OPENAI && sourceFormat === FORMATS.OPENAI_RESPONSES) {
@@ -227,7 +233,11 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
     // Some providers (e.g. xiaomi-tokenplan) return OpenAI-format responses even when
     // the request was translated to Claude format — the targetFormat is Claude but the
     // actual response is OpenAI-native and needs no further translation.
-    if (responseBody.choices || (responseBody.content && !Array.isArray(responseBody.content))) return responseBody;
+    if (responseBody.choices || (responseBody.content && !Array.isArray(responseBody.content))) {
+      return sourceFormat === FORMATS.OPENAI_RESPONSES && responseBody.choices
+        ? openAICompletionToResponses(responseBody, customToolNames)
+        : responseBody;
+    }
 
     let textContent = "", thinkingContent = "";
     const toolCalls = [];
@@ -269,7 +279,9 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
         total_tokens: (responseBody.usage.input_tokens || 0) + (responseBody.usage.output_tokens || 0)
       };
     }
-    return result;
+    return sourceFormat === FORMATS.OPENAI_RESPONSES
+      ? openAICompletionToResponses(result, customToolNames)
+      : result;
   }
 
   // Ollama
@@ -290,10 +302,16 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
 
   if (contentType.includes("text/event-stream")) {
     const sseText = await providerResponse.text();
-    const parsed = parseSSEToOpenAIResponse(sseText, model);
-    if (!parsed) {
+    let parsed;
+    try {
+      parsed = parseSSEToOpenAIResponse(sseText, model);
+    } catch {
       appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
-      return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid SSE response for non-streaming request");
+      return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid upstream SSE response for non-streaming request");
+    }
+    if (!parsed || parsed.error) {
+      appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
+      return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Upstream SSE stream failed or ended before a finish event");
     }
     responseBody = parsed;
   } else {
@@ -311,8 +329,10 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   // provider opts in via transport.quirks.clineEnvelope.
   responseBody = unwrapClineEnvelope(responseBody, provider);
 
+  const incomplete = contentType.includes("text/event-stream") &&
+    ["length", "max_tokens"].includes(responseBody?.choices?.[0]?.finish_reason);
   reqLogger.logProviderResponse(providerResponse.status, providerResponse.statusText, providerResponse.headers, responseBody);
-  if (onRequestSuccess) {
+  if (!incomplete && onRequestSuccess) {
     Promise.resolve()
       .then(onRequestSuccess)
       .catch(err => {
@@ -324,7 +344,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   responseBody = decloakToolNames(responseBody, toolNameMap);
 
   const usage = extractUsageFromResponse(responseBody);
-  appendLog({ tokens: usage, status: "200 OK" });
+  appendLog({ tokens: usage, status: incomplete ? "INCOMPLETE 200" : "200 OK" });
   saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
   if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
 
@@ -391,7 +411,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
       finish_reason: translatedResponse?.choices?.[0]?.finish_reason || "unknown"
     },
     pxpipe,
-    status: "success"
+    status: incomplete ? "incomplete" : "success"
   }, { endpoint: clientRawRequest?.endpoint || null })).catch(err => {
     console.error("[RequestDetail] Failed to save:", err.message);
   });

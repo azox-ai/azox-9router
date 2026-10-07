@@ -69,7 +69,26 @@ function stopTextBlock(state, results) {
 
 // Convert OpenAI stream chunk to Claude format
 export function openaiToClaudeResponse(chunk, state) {
-  if (!chunk || !chunk.choices?.[0]) return null;
+  if (!chunk) {
+    // The Responses pivot may end without a completed event. Preserve buffered
+    // tool arguments so an error frame does not hide tool input, but do not invent
+    // a message_delta/message_stop (those require an upstream finish signal).
+    if (state._streamError || state.finishReason || !state.toolCalls?.size) return null;
+    const pending = [];
+    for (const [idx, toolInfo] of state.toolCalls) {
+      if (state.closedToolBlocks?.has(idx)) continue;
+      const buffered = state.toolArgBuffers?.get(idx);
+      if (buffered) pending.push({
+        type: "content_block_delta",
+        index: toolInfo.blockIndex,
+        delta: { type: "input_json_delta", partial_json: sanitizeToolArgs(toolInfo.name, buffered) }
+      });
+      pending.push({ type: "content_block_stop", index: toolInfo.blockIndex });
+      (state.closedToolBlocks ??= new Set()).add(idx);
+    }
+    return pending.length ? pending : null;
+  }
+  if (!chunk.choices?.[0]) return null;
 
   const results = [];
   const choice = chunk.choices[0];
@@ -241,6 +260,7 @@ export function openaiToClaudeResponse(chunk, state) {
         type: "content_block_stop",
         index: toolInfo.blockIndex
       });
+      (state.closedToolBlocks ??= new Set()).add(idx);
     }
 
     // Mark finish for later usage injection in stream.js

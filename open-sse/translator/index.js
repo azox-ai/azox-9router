@@ -202,7 +202,11 @@ export function translateResponse(targetFormat, sourceFormat, chunk, state) {
     const fromOpenAI = responseRegistry.get(`${FORMATS.OPENAI}:${sourceFormat}`);
     if (fromOpenAI) {
       const finalResults = [];
-      for (const r of results) {
+      // A null chunk is the per-stream flush signal. The first pivot hop commonly
+      // returns null for it, but the second hop may need it to emit its terminal
+      // event. Preserve that signal instead of dropping it with an empty array.
+      const hopInput = results.length > 0 ? results : (chunk == null ? [null] : []);
+      for (const r of hopInput) {
         const converted = fromOpenAI(r, state);
         if (converted) {
           finalResults.push(...(Array.isArray(converted) ? converted : [converted]));
