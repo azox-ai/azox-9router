@@ -7,6 +7,7 @@ import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
 import { throwIfAborted } from "open-sse/utils/abort.js";
 import * as log from "../utils/logger.js";
+import { affinityIdentity, affinityTtlMs, readPin, setPin, clearPin, affinityLog } from "./sessionAffinity.js";
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
@@ -281,6 +282,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     // Resolve alias to provider ID (e.g., "kc" -> "kilocode")
     const providerId = resolveProviderId(provider);
+    const identity = affinityIdentity(options?.sessionKey, providerId, options?.apiKey);
 
     // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings)
     if (FREE_PROVIDERS[providerId]?.noAuth) {
@@ -316,18 +318,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     throwIfAborted(signal);
     log.debug("AUTH", `${provider} | total connections: ${connections.length}, excludeIds: ${excludeSet.size > 0 ? [...excludeSet].join(",") : "none"}, model: ${model || "any"}`);
 
-    if (connections.length === 0) {
-      log.warn("AUTH", `No credentials for ${provider}`);
-      return null;
-    }
-
     // Antigravity quota cache is lazy: only populated after that account returns 409/429.
     const isAntigravity = providerId === "antigravity";
     const antigravityQuotaCache = isAntigravity && model ? getAntigravityQuotaCache() : null;
 
-    // Filter out model-locked, excluded, and Antigravity quota-exhausted connections.
+    // Filter out cooldown, terminal, model-locked and quota-exhausted accounts.
+    // The same pool is used for affinity validation and normal selection.
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
+      if (["banned", "expired", "credits_exhausted"].includes(c.testStatus)) return false;
+      if (c.rateLimitedUntil && new Date(c.rateLimitedUntil).getTime() > Date.now()) return false;
       if (isModelLockActive(c, model)) return false;
       // Antigravity: skip if live quota exhausted for this model
       if (isAntigravity && model && antigravityQuotaCache) {
@@ -350,6 +350,41 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         log.debug("AUTH", `  → ${c.id?.slice(0, 8)} | ${excluded ? "excluded" : ""} ${locked ? `modelLocked(${model}) until ${lockUntil}` : ""}`);
       }
     });
+
+    const settings = await getSettings();
+    throwIfAborted(signal);
+    const ttl = affinityTtlMs(settings);
+    let pin = identity && ttl > 0 ? await readPin(identity) : null;
+    throwIfAborted(signal);
+    if (pin?.expired) {
+      affinityLog("affinity_cleared", identity, pin.connectionId, options?.requestId, "expired");
+      pin = null;
+    } else if (pin && !availableConnections.some(c => c.id === pin.connectionId)) {
+      const reason = excludeSet.has(pin.connectionId) ? "excluded" : "unavailable_or_locked";
+      await clearPin(identity, pin.connectionId);
+      affinityLog("affinity_cleared", identity, pin.connectionId, options?.requestId, reason);
+      // The ciphertext was issued by the pinned account; switching would make
+      // upstream reject it, so fail closed instead of guessing another account.
+      if (options?.encryptedContent) {
+        affinityLog("affinity_unavailable", identity, pin.connectionId, options?.requestId, `pinned_${reason}`);
+        return { affinityUnavailable: true, reason: `pinned account ${reason}` };
+      }
+      pin = null;
+    }
+
+    // Ciphertext from an unpinned (or expired) session cannot be attributed to
+    // an account. Do not guess even if only one account is currently active.
+    if (options?.encryptedContent && ttl > 0 && !pin) {
+      affinityLog("affinity_unavailable", identity, null, options?.requestId, "encrypted_content_without_pin");
+      return { affinityUnavailable: true, reason: "encrypted_content without an active pin" };
+    }
+
+    // Checked after the pin so an encrypted-content request whose pinned
+    // account was deactivated still fails closed instead of 404-ing.
+    if (connections.length === 0) {
+      log.warn("AUTH", `No credentials for ${provider}`);
+      return null;
+    }
 
     if (availableConnections.length === 0) {
       // Find earliest persistent lock or lazy Antigravity quota-cache reset for retry timing.
@@ -377,15 +412,20 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    const settings = await getSettings();
-    throwIfAborted(signal);
     // Per-provider strategy overrides global setting
     const providerOverride = (settings.providerStrategies || {})[providerId] || {};
     const strategy = providerOverride.fallbackStrategy || settings.fallbackStrategy || "fill-first";
 
     let connection;
+    let affinity = "none";
+    if (pin) {
+      connection = availableConnections.find(c => c.id === pin.connectionId);
+      affinity = "hit";
+      await setPin(identity, connection.id, ttl); // sliding TTL
+      affinityLog("affinity_hit", identity, connection.id, options?.requestId);
+    }
     // Pin to preferred connection if specified and available
-    if (preferredConnectionId) {
+    if (!connection && preferredConnectionId) {
       connection = availableConnections.find((c) => c.id === preferredConnectionId);
       if (connection) {
         log.info("AUTH", `${provider} | pinned to ${connection.id?.slice(0, 8)} (${connection.name || connection.email || "unnamed"})`);
@@ -439,6 +479,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
     throwIfAborted(signal);
+    if (identity && ttl > 0 && !pin) {
+      await setPin(identity, connection.id, ttl);
+      affinity = "created";
+      affinityLog("affinity_created", identity, connection.id, options?.requestId);
+    }
 
     return {
       authType: connection.authType,
@@ -461,6 +506,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
       },
       connectionId: connection.id,
+      affinity,
       // Include current status for optimization check
       testStatus: connection.testStatus,
       lastError: connection.lastError,

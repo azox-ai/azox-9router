@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS = {
   tailscaleEnabled: false,
   tailscaleUrl: "",
   stickyRoundRobinLimit: 3,
+  sessionAffinityTtlMs: 86400000, // session→account pin TTL; 0 disables (env NINEROUTER_SESSION_AFFINITY_TTL_MS overrides)
   providerStrategies: {},
   quotaVisibility: {},
   comboStrategy: "fallback",

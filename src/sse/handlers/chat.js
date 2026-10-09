@@ -21,6 +21,7 @@ import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
+import { extractSessionKey, containsEncryptedContent, affinityIdentity, affinityTtlMs, clearPin, affinityLog, withAffinityHeaders, affinityUnavailableResponse } from "../services/sessionAffinity.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
@@ -109,6 +110,11 @@ export async function handleChat(request, clientRawRequest = null) {
     const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
 
     if (comboStrategy === "fusion") {
+      if (affinityTtlMs(settings) > 0 && containsEncryptedContent(body)) {
+        const requestId = request.headers.get("x-request-id") || request.headers.get("x-correlation-id") || monitoring?.correlationId;
+        affinityLog("affinity_unavailable", null, null, requestId, "fusion_with_encrypted_content");
+        return affinityUnavailableResponse("fusion cannot safely route encrypted_content across accounts");
+      }
       let fusionAttempt = 0;
       log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
       return handleFusionChat({
@@ -211,6 +217,11 @@ async function handleSingleModelChat(
       const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
 
       if (comboStrategy === "fusion") {
+        if (affinityTtlMs(chatSettings) > 0 && containsEncryptedContent(body)) {
+          const requestId = request?.headers?.get("x-request-id") || request?.headers?.get("x-correlation-id") || monitoring?.correlationId;
+          affinityLog("affinity_unavailable", null, null, requestId, "fusion_with_encrypted_content");
+          return affinityUnavailableResponse("fusion cannot safely route encrypted_content across accounts");
+        }
         let fusionAttempt = 0;
         log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
         return handleFusionChat({
@@ -262,6 +273,16 @@ async function handleSingleModelChat(
   }
 
   const { provider, model } = modelInfo;
+  const affinityEnabled = affinityTtlMs(await getSettings()) > 0;
+  const encryptedContent = affinityEnabled && containsEncryptedContent(body);
+  const sessionKey = extractSessionKey(request?.headers, body);
+  const requestId = request?.headers?.get("x-request-id") || request?.headers?.get("x-correlation-id") || monitoring?.correlationId;
+  const identity = affinityEnabled ? affinityIdentity(sessionKey, provider, apiKey) : null;
+  if (encryptedContent && !identity) {
+    affinityLog("affinity_unavailable", null, null, requestId, "missing_session_key");
+    log.warn("AFFINITY", "encrypted_content without session key; refusing unpinned routing");
+    return affinityUnavailableResponse("encrypted_content requires a session key and an existing pin");
+  }
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 
@@ -275,7 +296,10 @@ async function handleSingleModelChat(
   let accountAttempt = 0;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+      sessionKey, apiKey, encryptedContent, requestId,
+    });
+    if (credentials?.affinityUnavailable) return affinityUnavailableResponse(credentials.reason);
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -380,7 +404,7 @@ async function handleSingleModelChat(
       startTime: attemptStartedAt,
     }));
 
-    if (result.success) return result.response;
+    if (result.success) return withAffinityHeaders(result.response, credentials);
 
     // Antigravity 409/429: refresh live quota to get exact resetAt before locking
     let quotaResetMs = null;
@@ -400,6 +424,16 @@ async function handleSingleModelChat(
       : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs)).shouldFallback;
 
     if (shouldFallback) {
+      if (identity && await clearPin(identity, credentials.connectionId)) {
+        affinityLog("affinity_cleared", identity, credentials.connectionId, requestId, `upstream_${result.status}`);
+      }
+      // Only an existing pin ("hit") proves which account issued the ciphertext.
+      // A pin created on this request carries no such evidence, so fall back normally.
+      if (encryptedContent && credentials.affinity === "hit") {
+        affinityLog("affinity_unavailable", identity, credentials.connectionId, requestId, `pinned_upstream_${result.status}`);
+        log.warn("AFFINITY", `pinned account failed (${result.status}); refusing account switch for encrypted_content`);
+        return affinityUnavailableResponse(`pinned account failed with upstream ${result.status}`);
+      }
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;
@@ -407,6 +441,6 @@ async function handleSingleModelChat(
       continue;
     }
 
-    return result.response;
+    return withAffinityHeaders(result.response, credentials);
   }
 }
