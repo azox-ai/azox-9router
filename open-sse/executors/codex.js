@@ -35,6 +35,7 @@ const CODEX_HOSTED_TOOL_TYPES = new Set([
   "computer", "computer_use_preview", "code_interpreter", "mcp", "local_shell",
   "tool_search"
 ]);
+const LEGACY_WEB_SEARCH_TYPE = /^web_search_preview(?:_\d{4}_\d{2}_\d{2})?$/;
 
 // Responses-native freeform tools carry a name plus format payload and must pass through intact.
 const CODEX_PASSTHROUGH_TOOL_TYPES = new Set(["custom"]);
@@ -94,6 +95,10 @@ function normalizeCodexTools(body) {
     if (type !== "function") {
       if (CODEX_PASSTHROUGH_TOOL_TYPES.has(type)) return true;
       if (!type || tool.function || typeof tool.name === "string") return false;
+      if (LEGACY_WEB_SEARCH_TYPE.test(type)) {
+        tool.type = "web_search";
+        return true;
+      }
       return CODEX_HOSTED_TOOL_TYPES.has(type);
     }
     const fn = tool.function && typeof tool.function === "object" && !Array.isArray(tool.function) ? tool.function : null;
@@ -114,6 +119,10 @@ function normalizeCodexTools(body) {
   });
   if (patternStats.removed > 0) {
     dbg("CODEX", `stripped ${patternStats.removed} unsupported tool schema pattern(s)`);
+  }
+  if (body.tool_choice && typeof body.tool_choice === "object" && !Array.isArray(body.tool_choice)
+    && typeof body.tool_choice.type === "string" && LEGACY_WEB_SEARCH_TYPE.test(body.tool_choice.type)) {
+    body.tool_choice.type = "web_search";
   }
   // Drop tool_choice if it references an unknown function name
   if (body.tool_choice && typeof body.tool_choice === "object" && !Array.isArray(body.tool_choice)) {
