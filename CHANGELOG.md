@@ -1,3 +1,22 @@
+# v0.5.86-azox.10 (2026-10-14)
+
+## Base and release scope
+- Based on upstream 0.5.86 with the Azox overlay; root package version remains 0.5.86. The separate upstream-0.5.95 review branch is not included.
+- Runtime source matches the dev hotfix commit `747929e4d195c1cc88b9fd1aca2f303fa0b0d552`. This release adds versioned release documentation; it does not change runtime behavior beyond that already-deployed hotfix.
+
+## Fixes since v0.5.86-azox.9
+- **Codex hosted web search**: normalize legacy `web_search_preview` and `web_search_preview_2025_03_11` tool types to the supported `web_search` type before dispatch; preserve tool options and unrelated tools. Covers Chat and Responses through the Codex executor.
+
+## Retained from v0.5.86-azox.9
+- **SSE integrity**: parse fragmented frames, enforce terminal-event invariants, preserve Responses/Chat translation and usage accounting, and surface incomplete or failed streams instead of reporting false success.
+- **Encrypted multi-turn affinity**: pin sessions to provider accounts and fail closed when an encrypted continuation cannot use its pinned account.
+
+## Verification and deployment notes
+- Targeted regression: 9 files, 106 tests passed (Codex hosted-search compatibility, encrypted session affinity, SSE integrity/translation/termination/accounting).
+- Configure the existing session-affinity TTL with `NINEROUTER_SESSION_AFFINITY_TTL_MS`; preserve OAuth/data volumes and existing API keys when replacing images.
+- Hosted search still depends on upstream account/model support. No new external-search fallback implementation is included. The untracked external-search test references a missing module and is preserved separately as WIP, not shipped as a passing release test.
+- Full provider matrix and full upstream suite were not run for this documentation-only release preparation.
+
 # v0.5.86 (2026-09-23)
 
 ## Features
