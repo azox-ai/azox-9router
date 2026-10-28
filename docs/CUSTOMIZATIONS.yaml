@@ -7,7 +7,7 @@
     "sha": "3a978a631ad65529c06e48ce495092d5bba29f46"
   },
   "fork_baseline": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
-  "scope": "AZO-917 assistant-prefill/cache slice only. Not a complete upgrade candidate; do not merge into master or release.",
+  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement. Not a complete upgrade candidate; do not merge into master or release.",
   "historical_diff_counts": {
     "recorded_v0_5_95_overlay": { "additive": 45, "modified": 39, "total": 84 },
     "verified_v0_5_95_to_fork_baseline": { "additive": 45, "modified": 42, "total": 87 },
@@ -52,8 +52,17 @@
       "evidence": "AZO-917 focused offline tests and full-suite comparison against AZO-916."
     }
   },
+  "retired_customizations": {
+    "contributor": {
+      "classification": "retire",
+      "decision": "AZO-927: requester removed AZOX Contributor onboarding from the v0.5.111 target.",
+      "reason": "The unfinished AZO-919 partial implementation was not accepted; keeping its public session exchange, admin invite route, dashboard guard exception or OAuth connection override would reintroduce an unauthorized feature.",
+      "candidate": "No AZOX Contributor overlay is carried from f08475cc0c6b9b81e0e54a0df9cf2eff7d3b8ab3; upstream direct-login OAuth and connection persistence remain unchanged.",
+      "deployed": false,
+      "limitations": "Source-only retirement on this review branch. No claim about the currently deployed service. OpenCode/Muse model names containing contributor are upstream model IDs, not AZOX Contributor onboarding."
+    }
+  },
   "provisional_contracts": {
-    "contributor": "Not ported or accepted in this slice; retain AZO-909/AZO-916 inventory obligations.",
     "combo_import_export": "Not ported or accepted; testing prefill combo fallback does not qualify the wider combo contract.",
     "portal": "Not ported or accepted in this slice.",
     "gateway_monitoring": "Not qualified in this slice."

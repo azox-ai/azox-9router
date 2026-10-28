@@ -53,6 +53,23 @@ function localRequest(pathname, headers = {}) {
   return request(pathname, { "x-9r-peer-token": PEER_TOKEN, "x-9r-real-ip": "127.0.0.1", ...headers });
 }
 
+describe("retired AZOX Contributor endpoints", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getSettings.mockResolvedValue({ requireLogin: true });
+    mocks.verifyDashboardAuthToken.mockResolvedValue(false);
+  });
+
+  it.each(["/api/contribute/session", "/api/contributor-admin/invites"])(
+    "does not exempt %s from dashboard auth", async (path) => {
+      expect(await proxy(request(path))).toEqual({
+        status: 401,
+        body: { error: "Unauthorized" },
+      });
+    },
+  );
+});
+
 describe("dashboard guard public LLM API access", () => {
   beforeEach(() => {
     vi.clearAllMocks();
