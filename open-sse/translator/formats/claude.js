@@ -2,6 +2,7 @@
 import { DEFAULT_THINKING_CLAUDE_SIGNATURE } from "../../config/defaultThinkingSignature.js";
 import { ROLE, CLAUDE_BLOCK } from "../schema/index.js";
 import { adjustMaxTokens } from "./maxTokens.js";
+import { applyAssistantPrefillPolicy } from "../concerns/assistantPrefillPolicy.js";
 import { applyCloaking } from "../../utils/claudeCloaking.js";
 import { resolveSessionId } from "../../utils/sessionManager.js";
 import { isValidClaudeSignature } from "../../utils/claudeSignature.js";
@@ -218,7 +219,7 @@ function hasForeignServerToolUseId(block) {
 // 3. bare content-block objects (content: {block} instead of [{block}]) → wrapped first
 // 4. role "system" messages (mid-conversation-system beta) → only top-level system is allowed
 // 5. server_tool_use blocks carrying a foreign (non-srvtoolu_) id → rejected outright
-export function normalizeClaudePassthrough(body, model = "") {
+export function normalizeClaudePassthrough(body, model = "", rawHeaders = null) {
   if (!body || typeof body !== "object") return body;
 
   // 1. Downgrade adaptive thinking for models that don't support it
@@ -288,7 +289,7 @@ export function normalizeClaudePassthrough(body, model = "") {
       const kept = [];
       for (const block of msg.content) {
         if (block.type === CLAUDE_BLOCK.THINKING || block.type === CLAUDE_BLOCK.REDACTED_THINKING) {
-          if (isValidClaudeSignature(block.signature)) {
+          if (block.type === CLAUDE_BLOCK.REDACTED_THINKING || isValidClaudeSignature(block.signature)) {
             hasKeptThinking = true;
             kept.push(block);
           }
@@ -342,7 +343,7 @@ export function normalizeClaudePassthrough(body, model = "") {
     body.messages = ensureTrailingUserTurn(body.messages, originalLastRole);
   }
 
-  return body;
+  return applyAssistantPrefillPolicy(body, rawHeaders);
 }
 
 // Newer Claude models reject a body that ends on an assistant turn ("does not
@@ -394,8 +395,19 @@ function markFinalToolResults(body) {
 // (normalize, tool dedupe, token savers) — otherwise the anchor drifts off the tail.
 export function anchorClaudeCache(body) {
   if (!body || typeof body !== "object") return body;
+  if (body.system && typeof body.system === "object" && !Array.isArray(body.system)) {
+    body.system = [body.system];
+  }
   if (Array.isArray(body.messages)) {
-    for (const msg of body.messages) normalizeMessageContent(msg);
+    for (const msg of body.messages) {
+      normalizeMessageContent(msg);
+      if (!Array.isArray(msg.content)) continue;
+      for (const block of msg.content) {
+        if (block?.type === CLAUDE_BLOCK.THINKING || block?.type === CLAUDE_BLOCK.REDACTED_THINKING) {
+          delete block.cache_control;
+        }
+      }
+    }
   }
   // Invalid markers first, whatever the budget: Anthropic rejects a tool that
   // carries BOTH defer_loading and cache_control (#3567). The re-anchor path
@@ -547,6 +559,9 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
   }
 
   // 1. System: remove all cache_control, add only to last block with ttl 1h
+  if (body.system && typeof body.system === "object" && !Array.isArray(body.system)) {
+    body.system = [body.system];
+  }
   if (body.system && Array.isArray(body.system)) {
     body.system = body.system.map((block, i) => {
       const { cache_control, ...rest } = block;
@@ -577,7 +592,12 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
 
       // Keep final assistant even if empty, otherwise check valid content
       const isFinalAssistant = i === len - 1 && msg.role === "assistant";
-      if (isFinalAssistant || hasValidContent(msg)) {
+      const hasNativeReasoning = provider === "claude" && msg.role === ROLE.ASSISTANT
+        && Array.isArray(msg.content) && msg.content.some(block =>
+          block?.type === CLAUDE_BLOCK.REDACTED_THINKING
+          || (block?.type === CLAUDE_BLOCK.THINKING && isValidClaudeSignature(block.signature)
+            && String(block.thinking ?? "").trim()));
+      if (isFinalAssistant || hasValidContent(msg) || hasNativeReasoning) {
         filtered.push(msg);
       }
     }
@@ -638,6 +658,12 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
           for (const block of msg.content) {
             const isThinking = block.type === CLAUDE_BLOCK.THINKING || block.type === CLAUDE_BLOCK.REDACTED_THINKING;
             if (isThinking) {
+              // Redacted reasoning is opaque provider history, not visible thinking.
+              if (isClaudeNative && block.type === CLAUDE_BLOCK.REDACTED_THINKING) {
+                hasKeptThinking = true;
+                kept.push(block);
+                continue;
+              }
               if (!String(block.thinking ?? "").trim()) continue;
               if (isClaudeNative) {
                 if (isValidClaudeSignature(block.signature)) {
@@ -732,7 +758,8 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     body = hoistToolResultImages(body);
   }
 
-  // A tool loop's final tool results: cached now, so the next step reads them.
+  // Normalize the terminal turn before choosing cache breakpoints.
+  applyAssistantPrefillPolicy(body, rawHeaders);
   markFinalToolResults(body);
 
   // Apply cloaking for OAuth tokens (billing header + fake user ID)
