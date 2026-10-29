@@ -8,6 +8,24 @@
   },
   "fork_baseline": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
   "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry plus AZO-945 Portal access-token-only credential sync. Not a complete upgrade candidate; do not merge into master or release.",
+  "upstream_repin": {
+    "decision": "AZO-960: requester chose A2; AZO-961 replays the same four review slices including AZO-959 F-01 onto v0.5.112. No merge, release or rollout authority is implied.",
+    "previous_ref": "v0.5.111",
+    "previous_sha": "3a978a631ad65529c06e48ce495092d5bba29f46",
+    "upstream_delta": { "commits": 14, "files": 48 },
+    "candidate_divergence": { "additive": 17, "modified": 16, "total": 33 },
+    "overlapping_overlay_paths": {
+      "src/dashboardGuard.js": "Disjoint hunks auto-merged: retain both upstream /api/oauth/minimax-code/lease and /api/oauth/minimax-code-global/lease prefixes in ALWAYS_PROTECTED and LOCAL_ONLY_PATHS, plus the AZOX dedicated Portal bearer gate. Contributor remains absent."
+    },
+    "upstream_only_seams": {
+      "src/app/api/oauth/[provider]/[action]/route.js": "Byte-equal to v0.5.112, including desktop lease-status and lease-connect actions; no Contributor override.",
+      "open-sse/executors/default.js": "Byte-equal to v0.5.112, including CodeBuddy channel identifiers; no AZOX executor override.",
+      "package.json": "Byte-equal to v0.5.112; upstream delta changes version only, not dependency ranges.",
+      "Dockerfile": "Byte-equal to v0.5.112; upstream now installs wreq-js and playwright-core during image build. These installs are unversioned and image reproducibility still needs qualification; no image build is part of AZO-961."
+    },
+    "verification": "git diff --name-status 1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d HEAD",
+    "before_host_work": "Update Knowledge authority AUTH-2026-10-27-9ROUTER-V05111-ZBS0 through a focused PR to the newly approved pin before any gated host work. No host work in AZO-961."
+  },
   "historical_diff_counts": {
     "recorded_v0_5_95_overlay": { "additive": 45, "modified": 39, "total": 84 },
     "verified_v0_5_95_to_fork_baseline": { "additive": 45, "modified": 42, "total": 87 },
@@ -110,7 +128,7 @@
         "tests/unit/dashboard-guard.test.js",
         "tests/unit/db-sqlite-vs-lowdb.test.js"
       ],
-      "overlay_differences": "Not carried from the fork baseline: account-mutation-attempt ordering and generic shouldCommit/beforeCommit/afterCommit/signal hooks (no v0.5.111 caller); only the Portal token-version guard is passed through chat health writes. Added beyond the fork baseline: request-path and usage-route refresh skip Portal rows.",
+      "overlay_differences": "Not carried from the fork baseline: account-mutation-attempt ordering and generic shouldCommit/beforeCommit/afterCommit/signal hooks (no v0.5.112 caller); only the Portal token-version guard is passed through chat health writes. Added beyond the fork baseline: request-path and usage-route refresh skip Portal rows.",
       "limitations": [
         "PORTAL_SYNC_TOKEN must be configured out of band; without it the route fails closed (401). No token rotation or per-caller identity beyond the shared bearer.",
         "Only claude and codex providers are accepted.",
@@ -137,6 +155,6 @@
   },
   "review": {
     "independent_review": false,
-    "limitations": "Manager self-review is not independent review. Full suite retains baseline failures and three explicit prefill contract conflicts; db-sqlite-vs-lowdb reorder parity can flake on equal updatedAt timestamps. Offline build remains blocked by fonts.googleapis.com DNS and resource allocation. No live OAuth/inference/deploy validation. AZO-945 Portal sync is tested offline only; its production Codex/Claude smoke is deferred to the qualification/rollout gate."
+    "limitations": "Manager self-review is not independent review. Full suite retains baseline failures and three explicit prefill contract conflicts; db-sqlite-vs-lowdb reorder parity can flake on equal updatedAt timestamps. AZO-961 build NOT RUN: available dependency archive is alternate diagnostic only (Next 16.3.4 does not satisfy ^16.4.2, AJV absent); local Node 22.23.2 differs from the 22.23.4 qualification pin. Earlier build failures do not establish build behavior for v0.5.112. No live OAuth/inference/deploy validation. AZO-945 Portal sync is tested offline only; its production Codex/Claude smoke is deferred to the qualification/rollout gate."
   }
 }
