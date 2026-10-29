@@ -46,6 +46,10 @@ const nextConfig = {
     optimizePackageImports: ["@xyflow/react", "@dnd-kit/core", "@dnd-kit/sortable", "material-symbols", "marked"],
   },
   webpack: (config, { isServer }) => {
+    // Compress cache packs so partial writes do not copy large uncompressed buffers.
+    if (config.cache && config.cache.type === "filesystem") {
+      config.cache.compression = "gzip";
+    }
     // Ignore fs/path modules in browser bundle
     if (!isServer) {
       config.resolve.fallback = {
