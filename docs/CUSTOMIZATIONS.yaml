@@ -7,7 +7,7 @@
     "sha": "3a978a631ad65529c06e48ce495092d5bba29f46"
   },
   "fork_baseline": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
-  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement. Not a complete upgrade candidate; do not merge into master or release.",
+  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry. Not a complete upgrade candidate; do not merge into master or release.",
   "historical_diff_counts": {
     "recorded_v0_5_95_overlay": { "additive": 45, "modified": 39, "total": 84 },
     "verified_v0_5_95_to_fork_baseline": { "additive": 45, "modified": 42, "total": 87 },
@@ -50,6 +50,28 @@
       ],
       "tests": ["tests/unit/azox-prefill-cache.test.js", "tests/unit/claude-cache-final-tool-results.test.js", "tests/unit/claude-cache-budget-single-object.test.js"],
       "evidence": "AZO-917 focused offline tests and full-suite comparison against AZO-916."
+    },
+    "combo_import_export": {
+      "classification": "carry",
+      "decision": "AZO-938 option 1: carry the fork-baseline combo transfer with source runtime semantics; no new whitelist or version rejection without a contract.",
+      "purpose": "Authenticated dashboard export/import of combo definitions plus per-combo routing settings, including Smart metadata, without exporting global settings or secrets.",
+      "acceptance": [
+        "Baseline limits remain: 500 items, 200 models per combo, 2 MiB body, combo name pattern, collision skip/overwrite and an atomic SQLite import transaction.",
+        "Smart smartPolicy, sessionSticky, confidenceThreshold and routerModel round-trip with runtime semantics; inactive judgeModel, routerModel and fusionTuning are retained.",
+        "Unknown strategy settings fields, unknown smartPolicy strings, envelope format and version are not rejected; malformed item types are reported per item.",
+        "Absent saved strategy stays absent; unknown saved fallbackStrategy exports as fallback.",
+        "Rotation resets only on changed imports; storage errors roll back definitions and settings and return a generic message."
+      ],
+      "primary_paths": [
+        "src/app/api/import-export/combos/route.js",
+        "src/lib/db/repos/combosRepo.js",
+        "open-sse/utils/requestBody.js",
+        "src/app/(dashboard)/dashboard/import-export/page.js"
+      ],
+      "tests": ["tests/unit/combo-import-export.test.js", "tests/unit/combo-import-integration.test.js", "tests/unit/combo-import-storage.test.js", "tests/unit/dashboard-guard.test.js"],
+      "overlay_differences": "Error logs omit the raw error object and non-body import errors return a generic message (log hardening versus the fork baseline).",
+      "evidence": "AZO-936 offline sandbox: RED 9 failing before the overlay fix, focused 72/72 passing, full suite 4337/4193/45 with no new failures versus the PR #10 source run (4291/4147/45).",
+      "deployed": false
     }
   },
   "retired_customizations": {
@@ -63,12 +85,11 @@
     }
   },
   "provisional_contracts": {
-    "combo_import_export": "Not ported or accepted; testing prefill combo fallback does not qualify the wider combo contract.",
     "portal": "Not ported or accepted in this slice.",
     "gateway_monitoring": "Not qualified in this slice."
   },
   "review": {
     "independent_review": false,
-    "limitations": "Manager self-review is not independent review. Full suite retains baseline failures and three explicit prefill contract conflicts. Offline build remains blocked by fonts.googleapis.com DNS and resource allocation. No live OAuth/inference/deploy validation."
+    "limitations": "Manager self-review is not independent review. Full suite retains baseline failures and three explicit prefill contract conflicts; db-sqlite-vs-lowdb reorder parity can flake on equal updatedAt timestamps. Offline build remains blocked by fonts.googleapis.com DNS and resource allocation. No live OAuth/inference/deploy validation."
   }
 }
