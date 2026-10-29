@@ -1,0 +1,18 @@
+{
+  "package": "inter-ui",
+  "version": "4.1.0",
+  "license": "OFL-1.1",
+  "upstream": "https://rsms.me/inter/",
+  "registry_manifest": "https://registry.npmjs.org/inter-ui/4.1.0",
+  "tarball": "https://registry.npmjs.org/inter-ui/-/inter-ui-4.1.0.tgz",
+  "tarball_integrity": "sha512-lUJ5YLtpj7jWsrhTbN5w32MLOqISGFGOTMRNn+IGhLrbt67z5yvmBRoqpLCWLVlJ+l7kqnH6su4meEqvLMfAAA==",
+  "tarball_sha256": "45321f01d2d13c8231066c7a45148285ae34fc64375f30c3c0c8b032348d2904",
+  "asset_member": "package/variable/InterVariable.woff2",
+  "files": {
+    "InterVariable.woff2": "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3",
+    "LICENSE.txt": "cc36dd53b88f8c7f138b9708e0c4b598816e4e52c7e252859e67e1e7edbcf117"
+  },
+  "modifications": "None. Original full normal variable font; no subset or transformation.",
+  "distribution_license": "public/fonts/inter-LICENSE.txt",
+  "acquisition": "AZO-969 / AZO-968: exact public-npm manifest reviewed; credential-free isolated download; no package installation, dependency resolution or lifecycle scripts."
+}
