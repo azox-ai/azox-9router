@@ -1,0 +1,65 @@
+{
+  "schema_version": 3,
+  "format_note": "JSON-compatible YAML; no additional parser dependency.",
+  "upstream": {
+    "repository": "https://github.com/decolua/9router",
+    "ref": "v0.5.112",
+    "sha": "1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d"
+  },
+  "fork_baseline": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
+  "scope": "AZO-917 assistant-prefill/cache slice only. Not a complete upgrade candidate; do not merge into master or release.",
+  "historical_diff_counts": {
+    "recorded_v0_5_95_overlay": { "additive": 45, "modified": 39, "total": 84 },
+    "verified_v0_5_95_to_fork_baseline": { "additive": 45, "modified": 42, "total": 87 },
+    "explanation": "The old manifest recorded an earlier overlay snapshot. The pinned fork baseline contains three more modified paths. Neither historical number is the v0.5.112 candidate diff count.",
+    "verify": "git diff --name-status a99cf57239ff778b61e434c2786009d5ed1c412c 1f508bcfa7f2b0e76662be7aefd39d0087747aa5"
+  },
+  "supported_customizations": {
+    "claude_assistant_prefill": {
+      "classification": "redesign",
+      "purpose": "Preserve assistant history and append a terminal user boundary by default for Claude Messages. Only explicit x-9router-assistant-prefill: preserve opts out.",
+      "acceptance": [
+        "Native Claude, Gemini and Responses assistant tails normalize; explicit preserve works across these source formats.",
+        "Signed native reasoning and opaque redacted reasoning survive, including reasoning-only earlier assistant turns.",
+        "Incomplete tool calls receive ordered error tool results; existing tool-result order remains unchanged.",
+        "Prefill rejection does not mutate account availability; upstream request-scoped combo fallback remains intact."
+      ],
+      "primary_paths": [
+        "open-sse/translator/concerns/assistantPrefillPolicy.js",
+        "open-sse/translator/formats/claude.js",
+        "open-sse/handlers/chatCore.js"
+      ],
+      "unchanged_integration_seams": [
+        "open-sse/services/accountFallback.js",
+        "open-sse/services/combo.js",
+        "src/sse/services/auth.js",
+        "open-sse/executors/default.js"
+      ],
+      "tests": ["tests/unit/azox-prefill-cache.test.js", "tests/unit/azox-prefill-fallback.test.js", "tests/unit/azox-prefill-passthrough.test.js"],
+      "evidence": "AZO-917: 10 initial behavioral RED cases, additional reasoning-history RED; expanded clean-upstream replay 14 failed/11 passed, candidate 25/25 GREEN. Baseline account/combo behavior needed no production patch.",
+      "upstream_expectation_conflicts": "Three original upstream assertions require unconditional assistant-prefill preservation. Kept unchanged and reported as known contract conflicts, not a green upstream suite."
+    },
+    "claude_cache": {
+      "classification": "carry",
+      "purpose": "Keep upstream anchor/budget implementation, normalize single-object system, strip forbidden reasoning markers before budget early return, and mark final tool results after terminal normalization.",
+      "acceptance": [
+        "At most four cache markers after normalization.",
+        "Eligible system and tool head anchors have ttl 1h; deferred tools remain unmarked.",
+        "Thinking and redacted_thinking never carry cache_control.",
+        "Existing markers and over-budget input retain eligible head anchors."
+      ],
+      "tests": ["tests/unit/azox-prefill-cache.test.js", "tests/unit/claude-cache-final-tool-results.test.js", "tests/unit/claude-cache-budget-single-object.test.js"],
+      "evidence": "AZO-917 focused offline tests and full-suite comparison against AZO-916."
+    }
+  },
+  "provisional_contracts": {
+    "contributor": "Not ported or accepted in this slice; retain AZO-909/AZO-916 inventory obligations.",
+    "combo_import_export": "Not ported or accepted; testing prefill combo fallback does not qualify the wider combo contract.",
+    "portal": "Not ported or accepted in this slice.",
+    "gateway_monitoring": "Not qualified in this slice."
+  },
+  "review": {
+    "independent_review": false,
+    "limitations": "Manager self-review is not independent review. Full suite retains baseline failures and three explicit prefill contract conflicts. Offline build remains blocked by fonts.googleapis.com DNS and resource allocation. No live OAuth/inference/deploy validation."
+  }
+}
