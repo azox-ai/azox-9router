@@ -77,6 +77,13 @@ const getPageInfo = (pathname) => {
       icon: "dns",
       breadcrumbs: [],
     };
+  if (pathname.includes("/import-export"))
+    return {
+      title: "Import / Export",
+      description: "Transfer combo definitions and routing settings",
+      icon: "import_export",
+      breadcrumbs: [],
+    };
   if (pathname.includes("/combos"))
     return {
       title: "Combos",
