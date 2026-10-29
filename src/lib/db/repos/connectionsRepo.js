@@ -388,7 +388,9 @@ export async function updateProviderConnection(id, data, options = {}) {
       result = null;
       return;
     }
-    const normalized = resetHealthStateOnActivation(existing, data);
+    // Only the Portal sync endpoint may assign Portal identity; an ordinary row
+    // must not claim a reserved external ID or version through a generic update.
+    const normalized = resetHealthStateOnActivation(existing, portalId ? data : withoutPortalIdentity(data));
     const guarded = portalId ? {
       ...normalized,
       accessToken: existing.accessToken,

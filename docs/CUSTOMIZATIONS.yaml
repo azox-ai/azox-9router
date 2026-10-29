@@ -32,9 +32,11 @@
       "unchanged_integration_seams": [
         "open-sse/services/accountFallback.js",
         "open-sse/services/combo.js",
-        "src/sse/services/auth.js",
         "open-sse/executors/default.js"
       ],
+      "shared_integration_seams": {
+        "src/sse/services/auth.js": "Not changed by this contract. Changed only by portal_credential_sync (optional Portal token-version guard on health writes); prefill rejection still does not mutate account availability."
+      },
       "tests": ["tests/unit/azox-prefill-cache.test.js", "tests/unit/azox-prefill-fallback.test.js", "tests/unit/azox-prefill-passthrough.test.js"],
       "evidence": "AZO-917: 10 initial behavioral RED cases, additional reasoning-history RED; expanded clean-upstream replay 14 failed/11 passed, candidate 25/25 GREEN. Baseline account/combo behavior needed no production patch.",
       "upstream_expectation_conflicts": "Three original upstream assertions require unconditional assistant-prefill preservation. Kept unchanged and reported as known contract conflicts, not a green upstream suite."
@@ -115,7 +117,7 @@
         "When a Portal access token expires the router does not refresh it; requests fail upstream until the Portal pushes a newer tokenVersion.",
         "Production Codex/Claude smoke, Portal end-to-end sync and network exposure of the internal route are deferred to the qualification/rollout gate (AZO-906)."
       ],
-      "evidence": "AZO-945 offline sandbox: RED 25 failing plus the route suite unloadable before implementation; focused 101/101 passing; full suite 4376/4232/45 with no new failure file versus the AZO-936 baseline; eslint clean on changed sources.",
+      "evidence": "AZO-945 offline sandbox: RED 25 failing plus the route suite unloadable before implementation; focused 101/101 passing; full suite 4376/4232/45 with no new failure file versus the AZO-936 baseline; eslint clean on changed sources. AZO-959 F-01 remediation: an ordinary (non-Portal) row update now strips portalExternalId/portalTokenVersion at the repository boundary; RED regression and native better-sqlite3 rehearsal recorded on AZO-959.",
       "deployed": false
     }
   },
@@ -124,7 +126,7 @@
       "classification": "retire",
       "decision": "AZO-927: requester removed AZOX Contributor onboarding from the v0.5.111 target.",
       "reason": "The unfinished AZO-919 partial implementation was not accepted; keeping its public session exchange, admin invite route, dashboard guard exception or OAuth connection override would reintroduce an unauthorized feature.",
-      "candidate": "No AZOX Contributor overlay is carried from f08475cc0c6b9b81e0e54a0df9cf2eff7d3b8ab3; upstream direct-login OAuth and connection persistence remain unchanged.",
+      "candidate": "No AZOX Contributor overlay is carried from f08475cc0c6b9b81e0e54a0df9cf2eff7d3b8ab3; upstream direct-login OAuth remains unchanged. connectionsRepo.js and dashboardGuard.js differ from upstream only for portal_credential_sync (Portal identity guards and the dedicated /api/internal/portal/ bearer gate); neither carries a Contributor reservation commit hook or guard exception.",
       "deployed": false,
       "limitations": "Source-only retirement on this review branch. No claim about the currently deployed service. OpenCode/Muse model names containing contributor are upstream model IDs, not AZOX Contributor onboarding."
     }
