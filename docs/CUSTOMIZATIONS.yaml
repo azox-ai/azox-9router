@@ -7,13 +7,26 @@
     "sha": "1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d"
   },
   "fork_baseline": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
-  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry plus AZO-945 Portal access-token-only credential sync. Not a complete upgrade candidate; do not merge into master or release.",
+  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry plus AZO-945 Portal access-token-only credential sync plus AZO-969 self-hosted Inter. Not a qualified upgrade candidate; offline production build remains blocked. Do not merge into master or release.",
+  "build_reproducibility": {
+    "task": "AZO-969",
+    "classification": "carry",
+    "purpose": "Remove build-time Google Fonts fetch without changing Inter normal style, variable 100-900 weights, --font-inter, swap or preload.",
+    "source": "inter-ui@4.1.0, unmodified full InterVariable.woff2, OFL-1.1",
+    "provenance": "src/app/fonts/inter/PROVENANCE.json",
+    "distribution_license": "public/fonts/inter-LICENSE.txt",
+    "tests": ["tests/unit/offline-inter.node-test.js"],
+    "dependency_delta": "None. No npm install, lifecycle script or package/lock change. Only reviewed font and license bytes are vendored.",
+    "build_gap": "Google font fetch removed. Supported offline Next16.4.3/Node22.23.4 build still fails in Buffer.concat from node:internal/fs/streams with Array buffer allocation failed. Three cumulative same-error attempts reached; no fourth build or relaxed sandbox bounds. Not release qualification.",
+    "details": "docs/OFFLINE-BUILD.md"
+  },
   "upstream_repin": {
     "decision": "AZO-960: requester chose A2; AZO-961 replays the same four review slices including AZO-959 F-01 onto v0.5.112. No merge, release or rollout authority is implied.",
     "previous_ref": "v0.5.111",
     "previous_sha": "3a978a631ad65529c06e48ce495092d5bba29f46",
     "upstream_delta": { "commits": 14, "files": 48 },
-    "candidate_divergence": { "additive": 17, "modified": 16, "total": 33 },
+    "candidate_divergence": { "additive": 23, "modified": 17, "total": 40 },
+    "divergence_note": "Counts include AZO-969 font prerequisite, provenance, license, regression and build-gap documentation; production allocation remains blocked.",
     "overlapping_overlay_paths": {
       "src/dashboardGuard.js": "Disjoint hunks auto-merged: retain both upstream /api/oauth/minimax-code/lease and /api/oauth/minimax-code-global/lease prefixes in ALWAYS_PROTECTED and LOCAL_ONLY_PATHS, plus the AZOX dedicated Portal bearer gate. Contributor remains absent."
     },
