@@ -232,6 +232,10 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
     creds.connectionId = creds.id;
   }
 
+  // Portal is the sole refresh authority for Portal-managed rows (claude/codex
+  // only): the router uses the synced access token as-is and never refreshes it.
+  if (creds.providerSpecificData?.portalExternalId) return creds;
+
   // Adopt latest DB tokens: OpenAI rotates the refresh token on every refresh, and
   // refreshing with a stale snapshot (reuse) revokes the whole session → account logout.
   if (creds.connectionId) {
