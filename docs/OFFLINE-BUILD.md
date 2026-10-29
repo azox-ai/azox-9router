@@ -3,7 +3,8 @@
 AZO-969 is a focused draft stacked on PR #16, base
 `903676f00c08a0c97342288e976b1d184387ae95`. Upstream remains
 `v0.5.112` / `1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d`.
-This font change does **not** qualify the production build or authorize release.
+This change does **not** qualify the release or authorize merge, image build or deploy;
+AZO-950 owns requalification.
 
 ## Font source and behavior
 
@@ -34,7 +35,7 @@ whole application has no runtime network traffic.
 With root dependencies available, run:
 
 ```sh
-node --test tests/unit/offline-inter.node-test.js
+node --test tests/unit/offline-inter.node-test.js tests/unit/webpack-cache.node-test.js
 ```
 
 The test reads the layout's actual font options, invokes the installed Next local
@@ -44,7 +45,7 @@ and OFL license. It does not import application bootstrap or make network calls.
 The original production layout failed these checks; the font candidate passes
 3/3. The local loader check is not a substitute for a successful production build.
 
-## Remaining allocation blocker
+## Allocation failure history
 
 Both untouched upstream and original candidate failed offline builds in AZO-950:
 Google Fonts DNS error followed by `RangeError: Array buffer allocation failed`.
@@ -81,8 +82,48 @@ RLIMIT values are per-process, not aggregate cgroup guarantees. Cache mounts are
 bounded scratch-only; no host home, credentials, sockets or live data are exposed.
 
 Three cumulative attempts reached the same allocation failure (AZO-950 original,
-AZO-969 fresh original, AZO-969 font candidate). No fourth build, increased bounds,
-font mocks, disabled assertions or network exception is part of this change.
-A later source revision must receive fresh exact-head build evidence after the
-retry gate is explicitly resolved. Upstream's red baseline stays red; draft stack
-must not merge, release, build a production image or deploy on this evidence.
+AZO-969 fresh original, AZO-969 font candidate).
+
+## Webpack cache fix and fourth build
+
+AZO-971 raised the cumulative limit from three to four builds, with no other
+bound changed. Before the fourth build, static inspection and synthetic probes
+traced the crash path:
+
+- Node 22.23.4 `internal/fs/streams` line 473: after a partial `writev`,
+  `Buffer.concat(buffers)` copies the **whole** original batch before slicing
+  off the written prefix, so a large batch briefly needs a second full copy.
+- Next 16.4.3 production builds set webpack `cache.compression: false`. The bundled
+  webpack serializer queues uncompressed cache-pack chunks in batches up to about
+  2 GiB on one `fs.WriteStream`.
+- With the sandbox FSIZE limit of 128 MiB, a dummy 160 MiB batch on a plain
+  `fs.WriteStream` writes exactly 134,217,728 bytes, allocates another full-batch
+  copy, then fails with `EFBIG`. The real bundled webpack file serializer with the
+  same dummy 160 MiB payload fails the same way uncompressed and succeeds as a
+  732,144-byte gzip pack.
+
+`next.config.mjs` therefore sets `cache.compression = "gzip"` for any webpack
+filesystem cache. Webpack caching stays enabled. `tests/unit/webpack-cache.node-test.js`
+failed before the change (`false !== 'gzip'`) and passes after it.
+
+The fourth and final build, exact commit
+`f35ddcfae4b898c901946ac159aeb9111478214b`, exited 0 in 36.64 seconds with no
+Google font DNS retry and produced standalone output. Webpack still logged one
+non-fatal warning:
+
+```text
+<w> [webpack.cache.PackFileCacheStrategy] Caching failed for pack: RangeError: Array buffer allocation failed
+```
+
+So the persistent cache pack was not saved in this sandbox. A dummy-buffer probe
+under the same limits allocated 31,744 MiB before the same RangeError, which fits
+the per-process 32 GiB address-space limit. The build's exact address-space usage
+at that moment was not measured, so the remaining cache allocation cause is
+inferred, not proved. This change turns the fatal crash into a non-fatal cache
+miss; it does not prove cache reuse.
+
+No resource limit was raised. No network exception, font mock, disabled webpack
+check or changed assertion is part of this change. The fourth build used the last
+authorized attempt. Any later source change needs separately authorized exact-head
+build evidence. Upstream's red baseline stays red. Do not merge, release, build a
+production image or deploy on this evidence.
