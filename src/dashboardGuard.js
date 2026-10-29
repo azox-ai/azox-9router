@@ -3,6 +3,7 @@ import { getSettings, validateApiKey } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { verifyDashboardAuthToken } from "@/lib/auth/dashboardSession";
 import { hasTrustedPeerHeaders } from "@/lib/auth/trustedPeer";
+import { hasValidPortalSyncToken } from "@/lib/auth/portalSync";
 
 const CLI_TOKEN_HEADER = "x-9r-cli-token";
 const CLI_TOKEN_SALT = "9r-cli-auth";
@@ -210,6 +211,14 @@ export const __test__ = {
 
 export async function proxy(request) {
   const { pathname } = request.nextUrl;
+
+  // Portal credential sync is a machine-to-machine route. It accepts only the
+  // dedicated PORTAL_SYNC_TOKEN bearer (fails closed when unset) and never a
+  // dashboard session, API key or trusted-peer header.
+  if (pathname.startsWith("/api/internal/portal/")) {
+    if (hasValidPortalSyncToken(request)) return NextResponse.next();
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
   // Local-only gate for spawn-capable / host-secret routes.
   if (LOCAL_ONLY_PATHS.some((p) => pathname.startsWith(p))) {

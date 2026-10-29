@@ -7,7 +7,7 @@
     "sha": "1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d"
   },
   "fork_baseline": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
-  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry. Not a complete upgrade candidate; do not merge into master or release.",
+  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry plus AZO-945 Portal access-token-only credential sync. Not a complete upgrade candidate; do not merge into master or release.",
   "historical_diff_counts": {
     "recorded_v0_5_95_overlay": { "additive": 45, "modified": 39, "total": 84 },
     "verified_v0_5_95_to_fork_baseline": { "additive": 45, "modified": 42, "total": 87 },
@@ -72,6 +72,51 @@
       "overlay_differences": "Error logs omit the raw error object and non-body import errors return a generic message (log hardening versus the fork baseline).",
       "evidence": "AZO-936 offline sandbox: RED 9 failing before the overlay fix, focused 72/72 passing, full suite 4337/4193/45 with no new failures versus the PR #10 source run (4291/4147/45).",
       "deployed": false
+    },
+    "portal_credential_sync": {
+      "classification": "carry",
+      "decision": "AZO-945: carry the fork-baseline Portal credential sync as an access-token-only contract; Portal is the sole refresh-token owner.",
+      "purpose": "Let the AZOX Portal push, read and revoke Claude/Codex OAuth access tokens for Portal-managed connections through a machine-to-machine route, without the router ever holding or rotating a Portal refresh token.",
+      "acceptance": [
+        "/api/internal/portal/* is admitted only with Authorization: Bearer PORTAL_SYNC_TOKEN (constant-time compare); an unset token, another scheme, a dashboard session or an API key gets 401, and the Portal token opens no other route.",
+        "PUT accepts claude/codex only, an access token, a valid expiresAt and a positive integer tokenVersion; it never accepts or stores a refresh token and removes any stale stored one.",
+        "Rows keep portalExternalId plus a monotonic portalTokenVersion; an older version is rejected with 409, a same-version replay heals health/metadata without replacing the token, a provider change is rejected, and every write is one SQLite transaction.",
+        "DELETE tombstones the external ID in the same transaction, so a late PUT cannot revive a revoked identity; dashboard deletes tombstone Portal rows too.",
+        "Normal create/update cannot claim or rewrite Portal identity, access token, expiry or version; direct-login dedup never merges onto a Portal row.",
+        "Background refresh, request-path checkAndRefreshToken and the usage-route refresh skip Portal rows; no path deactivates or expires a Portal row for a missing refresh token.",
+        "Chat health writes (error lock and success clear) are pinned to the Portal token version the request used, so a late result cannot touch a rotated credential.",
+        "importDb never restores Portal rows from a snapshot, keeps live Portal rows and their tombstones, and rejects an imported ID that collides with a live Portal row.",
+        "Direct-login OAuth refresh, dedup and health behavior are unchanged."
+      ],
+      "primary_paths": [
+        "src/app/api/internal/portal/connections/[externalId]/route.js",
+        "src/lib/auth/portalSync.js",
+        "src/dashboardGuard.js",
+        "src/lib/db/repos/connectionsRepo.js",
+        "src/lib/db/index.js",
+        "src/sse/services/backgroundTokenRefresh.js",
+        "src/sse/services/tokenRefresh.js",
+        "src/app/api/usage/[connectionId]/route.js",
+        "src/sse/services/auth.js",
+        "src/sse/handlers/chat.js"
+      ],
+      "tests": [
+        "tests/unit/portal-sync-route.test.js",
+        "tests/unit/portal-sync-atomic.test.js",
+        "tests/unit/portal-refresh-exclusion.test.js",
+        "tests/unit/background-token-refresh.test.js",
+        "tests/unit/dashboard-guard.test.js",
+        "tests/unit/db-sqlite-vs-lowdb.test.js"
+      ],
+      "overlay_differences": "Not carried from the fork baseline: account-mutation-attempt ordering and generic shouldCommit/beforeCommit/afterCommit/signal hooks (no v0.5.111 caller); only the Portal token-version guard is passed through chat health writes. Added beyond the fork baseline: request-path and usage-route refresh skip Portal rows.",
+      "limitations": [
+        "PORTAL_SYNC_TOKEN must be configured out of band; without it the route fails closed (401). No token rotation or per-caller identity beyond the shared bearer.",
+        "Only claude and codex providers are accepted.",
+        "When a Portal access token expires the router does not refresh it; requests fail upstream until the Portal pushes a newer tokenVersion.",
+        "Production Codex/Claude smoke, Portal end-to-end sync and network exposure of the internal route are deferred to the qualification/rollout gate (AZO-906)."
+      ],
+      "evidence": "AZO-945 offline sandbox: RED 25 failing plus the route suite unloadable before implementation; focused 101/101 passing; full suite 4376/4232/45 with no new failure file versus the AZO-936 baseline; eslint clean on changed sources.",
+      "deployed": false
     }
   },
   "retired_customizations": {
@@ -85,11 +130,11 @@
     }
   },
   "provisional_contracts": {
-    "portal": "Not ported or accepted in this slice.",
+    "portal": "Promoted to tested contract supported_customizations.portal_credential_sync (AZO-945); production smoke still gated.",
     "gateway_monitoring": "Not qualified in this slice."
   },
   "review": {
     "independent_review": false,
-    "limitations": "Manager self-review is not independent review. Full suite retains baseline failures and three explicit prefill contract conflicts; db-sqlite-vs-lowdb reorder parity can flake on equal updatedAt timestamps. Offline build remains blocked by fonts.googleapis.com DNS and resource allocation. No live OAuth/inference/deploy validation."
+    "limitations": "Manager self-review is not independent review. Full suite retains baseline failures and three explicit prefill contract conflicts; db-sqlite-vs-lowdb reorder parity can flake on equal updatedAt timestamps. Offline build remains blocked by fonts.googleapis.com DNS and resource allocation. No live OAuth/inference/deploy validation. AZO-945 Portal sync is tested offline only; its production Codex/Claude smoke is deferred to the qualification/rollout gate."
   }
 }
