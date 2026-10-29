@@ -60,7 +60,7 @@ describe("retired AZOX Contributor endpoints", () => {
     mocks.verifyDashboardAuthToken.mockResolvedValue(false);
   });
 
-  it.each(["/api/contribute/session", "/api/contributor-admin/invites"])(
+  it.each(["/api/contribute/session", "/api/contributor-admin/invites", "/api/import-export/combos"])(
     "does not exempt %s from dashboard auth", async (path) => {
       expect(await proxy(request(path))).toEqual({
         status: 401,
