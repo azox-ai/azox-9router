@@ -244,7 +244,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  * @param {string|null} model - The specific model that triggered the error
  * @returns {{ shouldFallback: boolean, cooldownMs: number }}
  */
-export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null) {
+export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null, options = {}) {
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
   const connections = await getProviderConnections({ provider });
   const conn = connections.find(c => c.id === connectionId);
@@ -274,14 +274,19 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const reason = typeof errorText === "string" ? errorText.slice(0, 200) : "Provider error";
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
 
-  await updateProviderConnection(connectionId, {
+  const updated = await updateProviderConnection(connectionId, {
     ...lockUpdate,
     testStatus: "unavailable",
     lastError: reason,
     errorCode: status,
     lastErrorAt: new Date().toISOString(),
     backoffLevel: newBackoffLevel ?? backoffLevel
-  });
+  }, ...portalVersionGuard(options));
+  // A Portal-managed row rotated to a newer token version while this request was
+  // in flight: the failure belongs to the old token, so it must not lock the new one.
+  if (!updated && options?.expectedPortalTokenVersion !== undefined) {
+    return { shouldFallback: true, cooldownMs, superseded: true };
+  }
 
   const lockKey = Object.keys(lockUpdate)[0];
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
@@ -303,9 +308,13 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
  * @param {object} currentConnection - credentials object (has _connection) or raw connection
  * @param {string|null} model - model that succeeded
  */
-export async function clearAccountError(connectionId, currentConnection, model = null) {
+export async function clearAccountError(connectionId, currentConnection, model = null, options = {}) {
   if (!connectionId || connectionId === "noauth") return;
-  const conn = currentConnection._connection || currentConnection;
+  let conn = currentConnection._connection || currentConnection;
+  if (options?.reloadCurrent) {
+    const connections = await getProviderConnections({ provider: conn.provider });
+    conn = connections.find(c => c.id === connectionId) || conn;
+  }
   const now = Date.now();
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));
 
@@ -341,7 +350,16 @@ export async function clearAccountError(connectionId, currentConnection, model =
     });
   }
 
-  await updateProviderConnection(connectionId, clearObj);
+  await updateProviderConnection(connectionId, clearObj, ...portalVersionGuard(options));
+}
+
+// Health writes carry the Portal token version they observed so a late result
+// from a superseded Portal access token cannot touch the rotated credential.
+// Spread as an optional trailing argument: non-Portal calls stay unchanged.
+function portalVersionGuard(options) {
+  return options?.expectedPortalTokenVersion !== undefined
+    ? [{ expectedPortalTokenVersion: options.expectedPortalTokenVersion }]
+    : [];
 }
 
 /**

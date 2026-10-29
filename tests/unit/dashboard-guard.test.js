@@ -70,6 +70,44 @@ describe("retired AZOX Contributor endpoints", () => {
   );
 });
 
+describe("Portal credential sync service route", () => {
+  const PORTAL_PATH = "/api/internal/portal/connections/account-1";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.PORTAL_SYNC_TOKEN = "portal-secret";
+    mocks.getSettings.mockResolvedValue({ requireLogin: true });
+    mocks.verifyDashboardAuthToken.mockResolvedValue(false);
+  });
+
+  it("admits the Portal service bearer token without a dashboard session", async () => {
+    const response = await proxy(request(PORTAL_PATH, { authorization: "Bearer portal-secret" }));
+    expect(response).toBe(mocks.nextResponse);
+  });
+
+  it.each([
+    ["a wrong bearer token", { authorization: "Bearer wrong" }],
+    ["a non-bearer scheme", { authorization: "Basic portal-secret" }],
+    ["no authorization header", {}],
+  ])("rejects %s", async (_label, headers) => {
+    expect(await proxy(request(PORTAL_PATH, headers))).toEqual({
+      status: 401, body: { error: "Unauthorized" },
+    });
+  });
+
+  it("fails closed when PORTAL_SYNC_TOKEN is unset, even for a dashboard session", async () => {
+    delete process.env.PORTAL_SYNC_TOKEN;
+    mocks.verifyDashboardAuthToken.mockResolvedValue(true);
+    const response = await proxy(request(PORTAL_PATH, { authorization: "Bearer " }));
+    expect(response).toEqual({ status: 401, body: { error: "Unauthorized" } });
+  });
+
+  it("does not let the Portal token open other API routes", async () => {
+    const response = await proxy(request("/api/providers", { authorization: "Bearer portal-secret" }));
+    expect(response).toEqual({ status: 401, body: { error: "Unauthorized" } });
+  });
+});
+
 describe("dashboard guard public LLM API access", () => {
   beforeEach(() => {
     vi.clearAllMocks();

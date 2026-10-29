@@ -27,6 +27,11 @@ export async function refreshAndUpdateCredentials(connection, force = false, pro
   const latest = connection.id ? await getProviderConnectionById(connection.id) : null;
   if (latest) connection = latest;
 
+  // Portal owns the refresh token for Portal-managed rows; never refresh them here.
+  if (connection.providerSpecificData?.portalExternalId) {
+    return { connection, refreshed: false };
+  }
+
   const executor = getExecutor(connection.provider);
 
   // Build credentials object from connection
