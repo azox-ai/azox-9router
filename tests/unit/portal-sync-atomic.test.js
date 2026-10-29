@@ -73,6 +73,39 @@ describe("Portal credential identity and monotonic version", () => {
     expect(await repo.deletePortalManagedConnection("portal-owned")).toBe(true);
   });
 
+  it("does not let an ordinary connection update claim a Portal identity", async () => {
+    const direct = await repo.createProviderConnection({
+      provider: "claude", authType: "oauth", email: "direct@example.test",
+      accessToken: "direct-access", refreshToken: "direct-refresh", testStatus: "active",
+      providerSpecificData: { label: "direct" },
+    });
+    const updated = await repo.updateProviderConnection(direct.id, {
+      providerSpecificData: {
+        ...direct.providerSpecificData,
+        portalExternalId: "portal-reserved", portalTokenVersion: 999, label: "renamed",
+      },
+    });
+    expect(updated.providerSpecificData).toEqual({ label: "renamed" });
+    expect(updated).toMatchObject({ accessToken: "direct-access", refreshToken: "direct-refresh" });
+
+    const synced = await repo.upsertPortalManagedConnection(
+      "portal-reserved", 1, "claude", () => portalValues("portal-reserved", "portal-access", 1),
+    );
+    expect(synced.status).toBe("created");
+    expect(synced.connection.id).not.toBe(direct.id);
+    expect(synced.connection.refreshToken).toBeUndefined();
+    expect(await repo.getProviderConnectionById(direct.id)).toMatchObject({
+      accessToken: "direct-access", refreshToken: "direct-refresh", providerSpecificData: { label: "renamed" },
+    });
+
+    expect(await repo.deleteProviderConnection(direct.id)).toBe(true);
+    const next = await repo.upsertPortalManagedConnection(
+      "portal-reserved", 2, "claude", () => portalValues("portal-reserved", "portal-access-2", 2),
+    );
+    expect(next).toMatchObject({ status: "updated", tokenVersion: 2 });
+    expect(next.connection.id).toBe(synced.connection.id);
+  });
+
   it("never merges Portal accounts with direct-login or other Portal identities", async () => {
     const direct = await repo.createProviderConnection({
       provider: "claude", authType: "oauth", email: "same@example.test",
