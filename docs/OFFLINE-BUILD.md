@@ -1,10 +1,11 @@
 # Offline Inter build prerequisite
 
-AZO-969 is a focused draft stacked on PR #16, base
+AZO-969 supplied the build prerequisite on PR #17, based on PR #16
 `903676f00c08a0c97342288e976b1d184387ae95`. Upstream remains
 `v0.5.112` / `1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d`.
-This change does **not** qualify the release or authorize merge, image build or deploy;
-AZO-950 owns requalification.
+AZO-950 completed PR17 offline requalification; the final results follow the
+historical failure/remediation record below. That evidence does **not** qualify
+an AZO-998 modification, a container image, master integration or production deployment.
 
 ## Font source and behavior
 
@@ -210,5 +211,134 @@ part of the history.
 
 No resource limit was raised. No network exception, font mock, disabled webpack
 check or relaxed assertion is part of this change. Upstream's red baseline stays
-red. AZO-950 owns aggregate requalification; do not merge, release, build a
-production image or deploy on this evidence.
+red. Do not merge, release, build a production image or deploy on this evidence.
+
+## Completed AZO-950 aggregate qualification
+
+PR17 head `cf82bec52b9f7e65a64d1019eb8569e925f716b7` passed plain cold
+build 17 (35.98 seconds) and warm build 18 (22.61 seconds), both exit 0 in the
+unchanged envelope above. These later results do not erase the earlier failures.
+The qualified kit contains Node 22.23.4 (ABI 127), npm 10.9.9, Next 16.4.3,
+Vitest 4.1.12, AJV 8.20.0 and better-sqlite3 12.11.1 (SQLite 3.53.2).
+
+Generated qualification lockfile SHA-256 values (not tracked in PR17):
+
+- Root: `467a653e975305130ae64844825429fe744c656a3acdfeb58e9ac00b32aa601d`.
+- Tests: `177728cca604687358f026e351d5348bf93bc301e0eff3c506b2168443a811d6`.
+
+| Full-suite result | Clean v0.5.112 | PR17 candidate |
+| --- | ---: | ---: |
+| Exit code | 1 | 1 |
+| Total assertions | 4367 | 4480 |
+| JSON passed count, including expected failures | 4230 | 4339 |
+| Ordinary passes | 4215 | 4324 |
+| Expected failures counted as passed | 15 | 15 |
+| Assertion failures | 38 | 42 |
+| Skipped | 98 | 98 |
+| Todo | 1 | 1 |
+| Collection errors | 2 | 2 |
+| Unmatched snapshots | 17 | 17 |
+
+All 38 common failure identities/messages match. The four candidate-only
+failures are three approved assistant-prefill policy conflicts and one
+`updatedAt` tie in DB reorder parity. Missing `lowdb` and the absent
+`cloud/src/handlers/embeddings.js` cause the two collection errors on each side;
+neither was installed, hidden or excluded to manufacture a green result.
+Node owning tests passed 18/18; migration/access tests passed 94/94. A combined
+focused run passed 250/251, retaining its shared offline-fetch failure.
+
+## AZO-998 version preparation
+
+The proposed immutable release tag is `v0.5.112-azox.1`; both root and CLI
+package versions are `0.5.112-azox.1`. No tag has been created. The unchanged
+publishing validator requires exact equality and leaves `latest` unchanged for
+this prerelease on tag push. A manual `promote_latest` input still explicitly
+overrides that existing policy; no workflow was dispatched.
+
+```sh
+node --test tests/unit/release-version.node-test.js
+```
+
+This runs the actual workflow validator with isolated package/Git fixtures and
+no network. It rejected the original bare package versions, then passed after
+alignment. The same tests exercise both actual update comparators: stripping
+the AZOX suffix prevents `Number('112-azox')` from hiding later upstream patch
+versions. Comparisons remain upstream-core comparisons, not full SemVer ordering.
+
+AZO-998 local source tree `eac50e80263bb4c8fa166d7a6ea35a21a3eadd9a`
+passed 30/30 Node owning tests, 162/162 focused contract tests and standard
+`npm run build` (build 19, exit 0, 36.75 seconds, Node 22.23.4 / Next 16.4.3).
+Build stderr was empty; stdout retained the expected cold-cache warning.
+The full suite remained red: 4480 total, 4325 ordinary passes, 15 expected
+failures, 41 assertion failures, 98 skipped, 1 todo, 2 collection errors and
+17 unmatched snapshots. All 41 failure identities/messages match PR17;
+its equal-timestamp DB reorder failure did not recur in that run; it recurred
+in AZO-1001 below. This is not a DB fix.
+All 38 upstream failures remain, with the same messages; the three extra failures
+are the existing assistant-prefill policy conflicts. Nothing was excluded.
+Focused stderr contains expected swallowed-error fixture diagnostics.
+
+Later workflow edits are work in progress, not covered by build 19: source and
+recipe now come from the same validated commit; BuildKit exports an OCI archive
+with provenance and SBOM enabled. Local smoke imports only the runtime platform,
+uses `--pull=never` and a loopback-only health port, and precedes registry login
+and publication. The original archive is reserved for publication with all
+attestations. Manifest validation distinguishes the two runtime platforms from
+linked BuildKit attestation descriptors and rejects missing/orphan descriptors.
+Actual shell-step fixtures failed before these changes and then passed.
+They double Docker, skopeo and health endpoints; they do not prove real OCI
+transport, digest preservation, provenance/SBOM contents or container health.
+
+AZO-1001 recipe remediation: the base image is pinned to the official
+`node:22.23.4-alpine` index digest verified against registry response bytes;
+the root install is `npm ci --ignore-scripts` from the committed qualified lock;
+better-sqlite3 is rebuilt from locked source and the Next build runs with
+`--network=none`; lazy runtime packages are copied from the same locked install.
+Docker is still unqualified as an image: nothing was built or run, Alpine `apk`
+packages remain unpinned, musl/arm64 native behavior and the base image's
+`/usr/local` Node header layout are unverified, and skipping the dev-only
+`unrs-resolver` postinstall has not been exercised inside Docker.
+
+AZO-1001 local qualification ran in the same no-network, read-only-toolchain
+sandbox and exact Node 22.23.4 / Next 16.4.3 offline kit, against staged source
+tree `313b79477d397b836df7b9bd206a01af1a098612` (PR17 head
+`cf82bec52b9f7e65a64d1019eb8569e925f716b7` plus the recipe/lock/workflow
+changes):
+
+| Check | Result |
+|---|---|
+| Lock regression (RED without committed lock, then GREEN) | offline `npm ci --dry-run` exits 0; a changed `next` spec fails with `ENOTCACHED` (npm attempts registry resolution, no fetch succeeds) |
+| Node unit tests | 41/41 passed |
+| Focused contract tests (14 files) | 163/163 passed; expected swallowed-error fixture diagnostics retained |
+| Build20 | standard `npm run build` exit 0 in 36.13s, empty stderr |
+| Candidate full suite | exit 1: 4480 total, 4339 passed, 42 failed, 98 skipped, 1 todo, 17 unmatched snapshots, 2 collection errors (`db-benchmark`, `embeddings.cloud`) |
+| Fresh PR17 baseline full suite (tree `e2658009b13bd7be220d30a0fa2c5a6df6884207`) | exit 1: 4480 total, 4340 passed, 41 failed, same skips, snapshots and collection errors |
+
+The only extra candidate failure is the known equal-`updatedAt` reorder tie in
+`tests/unit/db-sqlite-vs-lowdb.test.js` ("providerConnections: CRUD + reorder by
+priority", expected 'a' to be 'c'); the same identity appears in the historical
+PR17 aggregate. No baseline failure disappeared. The full suite is not green and
+the flake is neither excluded nor fixed. Later documentation-only edits are
+re-checked with the Node unit tests only; build and full-suite evidence stays
+bound to the tree above.
+
+Workflow review notes (Manager self-review, not independent; no workflow was
+executed): each platform image is smoke-tested from its local OCI archive before
+any registry login, pushed by `skopeo copy --all --preserve-digests` to a
+per-run GHCR candidate tag, and the pushed raw manifest digest must equal the
+archive digest. The version index is assembled only from those digests and
+validated for exactly one `linux/amd64` and one `linux/arm64` runtime with
+linked attestation descriptors; SBOM/provenance payload contents are not
+inspected. Remaining caveats: skopeo comes from unpinned `apt-get`, actions and
+`apk` packages are not pinned by digest, candidate tags are never cleaned up,
+and the resolved-version smoke runs the mutable version tag on all interfaces
+(`--publish 20128:20128`) on the runner. Real transport, digest preservation
+and attestation behavior remain unverified until an authorized workflow run.
+
+Obtaining the verified official base-image digest and publishing one draft
+source PR are covered by exact AZO-1001 Scope grants; no image build, registry
+push, merge, tag/release or deploy is implied. No release-readiness claim is
+made. After AZO-1001 is accepted, AZO-999 must integrate from `master`, resolve
+the recorded conflicts and requalify that new integration head before release
+gates. PR17 and AZO-1001 results above must not be relabeled as evidence for
+that future tree.
