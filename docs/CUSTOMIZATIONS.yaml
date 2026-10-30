@@ -7,20 +7,33 @@
     "sha": "1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d"
   },
   "fork_baseline": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
-  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry plus AZO-945 Portal access-token-only credential sync. Not a complete upgrade candidate; do not merge into master or release.",
+  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry plus AZO-945 Portal access-token-only credential sync plus AZO-969 self-hosted Inter, compressed production webpack cache, native production webpack hashing and bounded tracing reads. Not a qualified upgrade candidate until the AZO-950 requalification; do not merge into master or release.",
+  "build_reproducibility": {
+    "task": "AZO-969",
+    "classification": "carry",
+    "purpose": "Remove build-time Google Fonts fetch without changing Inter normal style, variable 100-900 weights, --font-inter, swap or preload. Gzip the webpack filesystem cache so uncompressed cache-pack writes no longer crash the offline build at the 128 MiB file-size limit. Use native SHA-256 for production webpack hashing so WASM hash reservations do not exhaust the bounded address space. Bound and deduplicate custom NFT reads during the standard Node build to leave FD headroom.",
+    "source": "inter-ui@4.1.0, unmodified full InterVariable.woff2, OFL-1.1",
+    "provenance": "src/app/fonts/inter/PROVENANCE.json",
+    "distribution_license": "public/fonts/inter-LICENSE.txt",
+    "tests": ["tests/unit/offline-inter.node-test.js", "tests/unit/webpack-cache.node-test.js", "tests/unit/build-trace-io.node-test.js"],
+    "dependency_delta": "Dependency ranges and lock data unchanged; no installation or kit mutation. Root package.json build script now uses a build-only Node launcher to bound/deduplicate custom NFT reads. Existing postbuild remains. Direct Next CLI/Bun paths are not qualified by this Node fix. Font/license bytes remain pinned.",
+    "build_result": "AZO-975 permits 100 cumulative builds under unchanged bounds. Code 22590821772fab8e7090a5480ebd81887568edc0: plain cold13 exit0/37.03s and warm14 exit0/23.22s, empty stderr, six cache files and exact Inter/license output after bounded tracing reads. Diagnostic15/16 main-process fdPeak241 vs prior1022; requested-read peak211, not active-read count. Earlier warm10 EMFILE and full-suite red baseline remain in evidence. Exact final source/docs proof and aggregate requalification belong to AZO-969/AZO-950.",
+    "details": "docs/OFFLINE-BUILD.md"
+  },
   "upstream_repin": {
     "decision": "AZO-960: requester chose A2; AZO-961 replays the same four review slices including AZO-959 F-01 onto v0.5.112. No merge, release or rollout authority is implied.",
     "previous_ref": "v0.5.111",
     "previous_sha": "3a978a631ad65529c06e48ce495092d5bba29f46",
     "upstream_delta": { "commits": 14, "files": 48 },
-    "candidate_divergence": { "additive": 17, "modified": 16, "total": 33 },
+    "candidate_divergence": { "additive": 27, "modified": 19, "total": 46 },
+    "divergence_note": "Counts include AZO-969 font prerequisite, provenance, license, regressions, next.config.mjs webpack cache compression/native production hashing, bounded build-only tracing reads and build documentation.",
     "overlapping_overlay_paths": {
       "src/dashboardGuard.js": "Disjoint hunks auto-merged: retain both upstream /api/oauth/minimax-code/lease and /api/oauth/minimax-code-global/lease prefixes in ALWAYS_PROTECTED and LOCAL_ONLY_PATHS, plus the AZOX dedicated Portal bearer gate. Contributor remains absent."
     },
     "upstream_only_seams": {
       "src/app/api/oauth/[provider]/[action]/route.js": "Byte-equal to v0.5.112, including desktop lease-status and lease-connect actions; no Contributor override.",
       "open-sse/executors/default.js": "Byte-equal to v0.5.112, including CodeBuddy channel identifiers; no AZOX executor override.",
-      "package.json": "Byte-equal to v0.5.112; upstream delta changes version only, not dependency ranges.",
+      "package.json": "Dependency ranges remain equal to v0.5.112. AZO-969 changes only the standard build script to scripts/build-next.cjs so traced reads have descriptor headroom; other scripts retain upstream behavior.",
       "Dockerfile": "Byte-equal to v0.5.112; upstream now installs wreq-js and playwright-core during image build. These installs are unversioned and image reproducibility still needs qualification; no image build is part of AZO-961."
     },
     "verification": "git diff --name-status 1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d HEAD",

@@ -45,7 +45,14 @@ const nextConfig = {
     // Tree-shake heavy barrel imports to cut compile + bundle size
     optimizePackageImports: ["@xyflow/react", "@dnd-kit/core", "@dnd-kit/sortable", "material-symbols", "marked"],
   },
-  webpack: (config, { isServer }) => {
+  webpack: (config, { isServer, dev }) => {
+    // Webpack's WASM hash pool reserves 4 GiB per instance, even with a small heap.
+    // Native hashing leaves address space for cache serialization in bounded builds.
+    if (!dev) config.output.hashFunction = "sha256";
+    // Compress cache packs so partial writes do not copy large uncompressed buffers.
+    if (config.cache && config.cache.type === "filesystem") {
+      config.cache.compression = "gzip";
+    }
     // Ignore fs/path modules in browser bundle
     if (!isServer) {
       config.resolve.fallback = {
