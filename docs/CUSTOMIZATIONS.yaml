@@ -7,7 +7,7 @@
     "sha": "1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d"
   },
   "fork_baseline": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
-  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry plus AZO-945 Portal access-token-only credential sync plus AZO-969 self-hosted Inter, compressed production webpack cache, native production webpack hashing and bounded tracing reads. Not a qualified upgrade candidate until the AZO-950 requalification; do not merge into master or release.",
+  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry plus AZO-945 Portal access-token-only credential sync plus AZO-969 self-hosted Inter, compressed production webpack cache, native production webpack hashing and bounded tracing reads. AZO-950 completed offline qualification of PR17; its full suite remains red against the documented upstream baseline. AZO-998 aligns both package versions with the proposed v0.5.112-azox.1 tag; no tag is created. AZO-1001 pins the official Node base image digest, commits the qualified root lock and locks the Docker recipe; local candidate qualification is recorded under azo_1001_checkpoint. No image was built or run and master integration (AZO-999) is pending. Do not merge into master or release.",
   "build_reproducibility": {
     "task": "AZO-969",
     "classification": "carry",
@@ -17,7 +17,7 @@
     "distribution_license": "public/fonts/inter-LICENSE.txt",
     "tests": ["tests/unit/offline-inter.node-test.js", "tests/unit/webpack-cache.node-test.js", "tests/unit/build-trace-io.node-test.js"],
     "dependency_delta": "Dependency ranges and lock data unchanged; no installation or kit mutation. Root package.json build script now uses a build-only Node launcher to bound/deduplicate custom NFT reads. Existing postbuild remains. Direct Next CLI/Bun paths are not qualified by this Node fix. Font/license bytes remain pinned.",
-    "build_result": "AZO-975 permits 100 cumulative builds under unchanged bounds. Code 22590821772fab8e7090a5480ebd81887568edc0: plain cold13 exit0/37.03s and warm14 exit0/23.22s, empty stderr, six cache files and exact Inter/license output after bounded tracing reads. Diagnostic15/16 main-process fdPeak241 vs prior1022; requested-read peak211, not active-read count. Earlier warm10 EMFILE and full-suite red baseline remain in evidence. Exact final source/docs proof and aggregate requalification belong to AZO-969/AZO-950.",
+    "build_result": "AZO-975 permits 100 cumulative builds under unchanged bounds. Code 22590821772fab8e7090a5480ebd81887568edc0: plain cold13 exit0/37.03s and warm14 exit0/23.22s, empty stderr, six cache files and exact Inter/license output after bounded tracing reads. Diagnostic15/16 main-process fdPeak241 vs prior1022; requested-read peak211, not active-read count. AZO-950 final PR17 qualification: cold17 exit0/35.98s and warm18 exit0/22.61s with Node22.23.4/Next16.4.3. Earlier warm10 EMFILE and the red full-suite baseline remain in evidence; these successes do not qualify a modified AZO-998 tree or a container image.",
     "details": "docs/OFFLINE-BUILD.md"
   },
   "upstream_repin": {
@@ -33,11 +33,31 @@
     "upstream_only_seams": {
       "src/app/api/oauth/[provider]/[action]/route.js": "Byte-equal to v0.5.112, including desktop lease-status and lease-connect actions; no Contributor override.",
       "open-sse/executors/default.js": "Byte-equal to v0.5.112, including CodeBuddy channel identifiers; no AZOX executor override.",
-      "package.json": "Dependency ranges remain equal to v0.5.112. AZO-969 changes only the standard build script to scripts/build-next.cjs so traced reads have descriptor headroom; other scripts retain upstream behavior.",
-      "Dockerfile": "Byte-equal to v0.5.112; upstream now installs wreq-js and playwright-core during image build. These installs are unversioned and image reproducibility still needs qualification; no image build is part of AZO-961."
+      "package.json": "Dependency ranges remain equal to v0.5.112. AZO-969 changes the standard build script to scripts/build-next.cjs so traced reads have descriptor headroom. AZO-998 changes root and CLI package versions to 0.5.112-azox.1 to match the proposed Docker-safe prerelease tag; publishing validator and dependency ranges remain unchanged.",
+      "cli/cli.js and src/app/api/version/route.js": "AZO-998 compares numeric upstream release cores without the AZOX suffix, preserving detection of later upstream patch versions. This is not full SemVer prerelease ordering and does not replace the upstream latest-update policy.",
+      "Dockerfile": "AZO-1001 pins node:22.23.4-alpine to the official multi-platform index sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 (linux/amd64 sha256:025b8e975a61d94e33abeafaad1255ef44e4898cf1a1b6446860009c72e6d284, linux/arm64/v8 sha256:fd4a97c1630a4a0a70117dd7b393e322db316d0489bdf36a0e776e7b235341b0, verified against registry response bytes 2026-10-30). Root install is npm ci from the committed AZO-950 qualified lock with lifecycle scripts disabled; better-sqlite3 is rebuilt from locked source with network disabled; Next build runs with network disabled; wreq-js, playwright-core and @wreq-js bindings are copied from that same locked install instead of a second unversioned resolution. Not image-qualified: no image was built or run, Alpine apk packages are unpinned and musl/arm64 native behavior is unverified.",
+      "package-lock.json": "AZO-1001 commits the AZO-950 qualified root lock (input SHA-256 467a653e975305130ae64844825429fe744c656a3acdfeb58e9ac00b32aa601d); only the root version metadata changes to 0.5.112-azox.1. .gitignore now un-ignores the root lock only. tests/unit/docker-lock.node-test.js runs a real offline npm ci --dry-run against it."
     },
     "verification": "git diff --name-status 1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d HEAD",
     "before_host_work": "Update Knowledge authority AUTH-2026-10-27-9ROUTER-V05111-ZBS0 through a focused PR to the newly approved pin before any gated host work. No host work in AZO-961."
+  },
+  "azo_998_checkpoint": {
+    "qualified_local_tree": "eac50e80263bb4c8fa166d7a6ea35a21a3eadd9a",
+    "node_tests": "30/30 passed",
+    "focused_contract_tests": "162/162 passed; expected swallowed-error fixture diagnostics retained",
+    "build": "Build19 exit0/36.75s, standard npm run build, exact Node22.23.4/Next16.4.3 offline kit, unchanged envelope; empty stderr and cold-cache warning in stdout",
+    "full_suite": "4480 total, 4325 ordinary passes, 15 expected failures, 41 assertion failures, 98 skipped, 1 todo, 2 collection errors, 17 unmatched snapshots. All 41 failure identities/messages match PR17; its equal-timestamp DB reorder failure did not recur in that run (it recurred in AZO-1001), not a DB fix. All 38 upstream failures remain plus three prefill policy conflicts. No exclusions.",
+    "later_workflow_wip": "Source and recipe use the same validated commit. OCI export enables provenance/SBOM; local-only smoke precedes registry login/publication. Manifest checks distinguish runtime platforms from linked attestation descriptors. Shell fixtures are not real Docker/skopeo, attestation-content or image qualification. Dockerfile digest/lock remediation, transport and candidate-tag lifecycle remain incomplete; exact final tree needs review and fresh checks. No image built/pushed. Superseded by azo_1001_checkpoint."
+  },
+  "azo_1001_checkpoint": {
+    "qualified_local_tree": "313b79477d397b836df7b9bd206a01af1a098612 (staged on PR17 head cf82bec52b9f7e65a64d1019eb8569e925f716b7)",
+    "lock_regression": "RED without committed lock, then GREEN: offline npm ci --dry-run exits 0; a changed next spec fails with ENOTCACHED after npm attempts registry resolution; no fetch succeeds.",
+    "node_tests": "41/41 passed",
+    "focused_contract_tests": "163/163 passed across 14 files; expected swallowed-error fixture diagnostics retained",
+    "build": "Build20 exit0/36.13s, standard npm run build, exact Node22.23.4/Next16.4.3 offline kit, unchanged envelope; empty stderr",
+    "full_suite": "Candidate exit1: 4480 total, 4339 passed including 15 expected failures, 42 failed, 98 skipped, 1 todo, 17 unmatched snapshots, 2 collection errors. Fresh PR17 baseline (tree e2658009b13bd7be220d30a0fa2c5a6df6884207) exit1: 4480 total, 4340 passed, 41 failed, same skips/snapshots/collection errors. Only extra candidate failure is the known equal-updatedAt reorder tie in db-sqlite-vs-lowdb (expected 'a' to be 'c'); no baseline failure disappeared. Not excluded, not fixed.",
+    "evidence_binding": "Build and full-suite evidence bind to the tree above. Later documentation-only edits are re-checked with Node unit tests only.",
+    "docker_limits": "Not image-qualified: no image built, run or pushed; Alpine apk, skopeo apt install and actions are unpinned; musl/arm64 native rebuild, base-image /usr/local Node header layout and skipped dev unrs-resolver postinstall are unverified inside Docker; OCI transport, digest preservation and SBOM/provenance contents are unverified; candidate tags are not cleaned up; resolved-version smoke publishes 20128 on all runner interfaces."
   },
   "historical_diff_counts": {
     "recorded_v0_5_95_overlay": { "additive": 45, "modified": 39, "total": 84 },
@@ -168,6 +188,6 @@
   },
   "review": {
     "independent_review": false,
-    "limitations": "Manager self-review is not independent review. Full suite retains baseline failures and three explicit prefill contract conflicts; db-sqlite-vs-lowdb reorder parity can flake on equal updatedAt timestamps. AZO-961 build NOT RUN: available dependency archive is alternate diagnostic only (Next 16.3.4 does not satisfy ^16.4.2, AJV absent); local Node 22.23.2 differs from the 22.23.4 qualification pin. Earlier build failures do not establish build behavior for v0.5.112. No live OAuth/inference/deploy validation. AZO-945 Portal sync is tested offline only; its production Codex/Claude smoke is deferred to the qualification/rollout gate."
+    "limitations": "Manager self-review is not independent review. AZO-961's original build was not run with its alternate diagnostic kit; AZO-950 later qualified PR17 using the exact Node22.23.4/Next16.4.3 kit. Upstream full suite: 4367 total, 4230 passed (including 15 expected failures), 38 assertion failures, 98 skipped, 1 todo and 2 collection errors. PR17: 4480 total, 4339 passed (including 15 expected failures), 42 assertion failures, 98 skipped, 1 todo and 2 collection errors. All 38 common failures retain their identities/messages; candidate adds three explicit prefill policy conflicts and one equal-updatedAt reorder failure. Both sides retain 17 unmatched snapshots. Missing lowdb and the absent cloud embeddings module are not repaired or excluded to manufacture a green suite. AZO-1001 freshly qualified its staged tree locally (azo_1001_checkpoint) with the same red full-suite comparison; PR17 and AZO-1001 qualification is not release, master integration or image qualification. No live OAuth/inference/deploy validation. AZO-945 Portal sync remains offline-only; production Codex/Claude smoke is deferred to the qualification/rollout gate."
   }
 }

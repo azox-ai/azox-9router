@@ -192,10 +192,10 @@ if (skipUpdate && !trayMode && !process.stdin.isTTY) {
 // Always use Node.js runtime with absolute path
 const RUNTIME = process.execPath;
 
-// Compare semver versions: returns 1 if a > b, -1 if a < b, 0 if equal
+// Compare upstream release cores; an AZOX suffix must not hide patch updates.
 function compareVersions(a, b) {
-  const partsA = a.split(".").map(Number);
-  const partsB = b.split(".").map(Number);
+  const partsA = a.split("-")[0].split(".").map(Number);
+  const partsB = b.split("-")[0].split(".").map(Number);
   for (let i = 0; i < 3; i++) {
     if (partsA[i] > partsB[i]) return 1;
     if (partsA[i] < partsB[i]) return -1;

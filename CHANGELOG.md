@@ -1,3 +1,13 @@
+# v0.5.112-azox.1 (unreleased)
+
+## Preparation
+- Align gateway and CLI package versions with the proposed `v0.5.112-azox.1` tag; exercise the actual Docker publishing validator with offline fixtures. No release tag has been created.
+- Preserve upstream patch-update detection when the installed version carries an AZOX suffix; update checks still compare upstream release cores.
+- Record completed PR17 offline qualification separately from historical build failures and the still-red upstream/candidate test baseline.
+- Lock the Docker recipe: pin the official `node:22.23.4-alpine` index digest, commit the qualified root lock, install with `npm ci --ignore-scripts`, rebuild better-sqlite3 and run the Next build without network, and copy lazy runtime packages from the same install. Publish each platform from its locally smoke-tested OCI archive with digest checks and linked attestations.
+- Fresh local candidate qualification passed lock, Node, focused contract and build checks; the full suite stays red against the PR17 baseline with only the known DB reorder tie extra. No image was built or run; image qualification and master integration remain required before release.
+- Keep Claude prefill/cache, combo transfer and Portal access-token-only sync contracts unchanged. Contributor stays retired; no retired Responses/SSE overlay is restored.
+
 # v0.5.112 (2026-10-28)
 
 ## Features

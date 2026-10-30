@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-ARG NODE_IMAGE=node:22.23.4-alpine
+ARG NODE_IMAGE=node:22.23.4-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 ARG ALPINE_MIRROR=dl-cdn.alpinelinux.org
 ARG NPM_REGISTRY=https://registry.npmjs.org/
 ARG APP_VERSION=unknown
@@ -19,9 +19,9 @@ ARG NPM_REGISTRY
 
 RUN apk add --no-cache python3 make g++ linux-headers
 
-COPY package.json ./
+COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
-    npm install \
+    npm ci --ignore-scripts --include=dev --include=optional --no-audit --no-fund \
       --registry="${NPM_REGISTRY}" \
       --fetch-retries=5 \
       --fetch-retry-factor=2 \
@@ -29,27 +29,25 @@ RUN --mount=type=cache,target=/root/.npm \
       --fetch-retry-maxtimeout=120000 \
       --fetch-timeout=300000
 
+# Lifecycle scripts are disabled above. Build the only native addon from the
+# locked source with the base image's Node headers, offline (no prebuild fetch).
+RUN --network=none cd node_modules/better-sqlite3 && \
+    node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js \
+      rebuild --release --nodedir=/usr/local && \
+    node -e "require('./')(':memory:').close()"
+
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build
+RUN --network=none npm run build
 
 # https://github.com/decolua/9router/issues/5245
 # wreq-js and playwright-core are lazy runtime dependencies (loaded by
 # lazyRuntime.js via createRequire). Next standalone tracing does not include
-# them, so OpenCode Free fails with HTTP 502 ("resolve is undefined").
-# Install them (with their native bindings/transitive deps) in an isolated dir
-# so the runner stage can copy them into /app/node_modules.
-RUN --mount=type=cache,target=/root/.npm \
-    mkdir -p /opt/lazy-runtime && cd /opt/lazy-runtime && \
-    npm init -y >/dev/null && \
-    npm install --no-save \
-      --registry="${NPM_REGISTRY}" \
-      --fetch-retries=5 \
-      --fetch-retry-factor=2 \
-      --fetch-retry-mintimeout=10000 \
-      --fetch-retry-maxtimeout=120000 \
-      --fetch-timeout=300000 \
-      wreq-js playwright-core
+# them. They and the platform wreq bindings come from the same lockfile install
+# (exact versions + integrity), so no second, unversioned resolution happens.
+RUN mkdir -p /opt/lazy-runtime/node_modules && \
+    cp -a node_modules/wreq-js node_modules/playwright-core node_modules/@wreq-js \
+      /opt/lazy-runtime/node_modules/
 
 FROM ${NODE_IMAGE} AS runner
 ARG ALPINE_MIRROR
