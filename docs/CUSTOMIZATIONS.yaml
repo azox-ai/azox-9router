@@ -7,17 +7,17 @@
     "sha": "1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d"
   },
   "fork_baseline": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
-  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry plus AZO-945 Portal access-token-only credential sync plus AZO-969 self-hosted Inter and compressed production webpack cache. Not a qualified upgrade candidate until the AZO-950 requalification; do not merge into master or release.",
+  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry plus AZO-945 Portal access-token-only credential sync plus AZO-969 self-hosted Inter, compressed production webpack cache and native production webpack hashing. Not a qualified upgrade candidate until the AZO-950 requalification; do not merge into master or release.",
   "build_reproducibility": {
     "task": "AZO-969",
     "classification": "carry",
-    "purpose": "Remove build-time Google Fonts fetch without changing Inter normal style, variable 100-900 weights, --font-inter, swap or preload. Gzip the webpack filesystem cache so uncompressed cache-pack writes no longer crash the offline build at the 128 MiB file-size limit.",
+    "purpose": "Remove build-time Google Fonts fetch without changing Inter normal style, variable 100-900 weights, --font-inter, swap or preload. Gzip the webpack filesystem cache so uncompressed cache-pack writes no longer crash the offline build at the 128 MiB file-size limit. Use native SHA-256 for production webpack hashing so WASM hash reservations do not exhaust the bounded address space.",
     "source": "inter-ui@4.1.0, unmodified full InterVariable.woff2, OFL-1.1",
     "provenance": "src/app/fonts/inter/PROVENANCE.json",
     "distribution_license": "public/fonts/inter-LICENSE.txt",
     "tests": ["tests/unit/offline-inter.node-test.js", "tests/unit/webpack-cache.node-test.js"],
     "dependency_delta": "None. No npm install, lifecycle script or package/lock change. Only reviewed font and license bytes are vendored.",
-    "build_result": "AZO-971 fourth and final cumulative build, f35ddcfae4b898c901946ac159aeb9111478214b: npm run build exit 0 in 36.64s under unchanged offline sandbox bounds. Webpack still logs a non-fatal 'Caching failed for pack: RangeError: Array buffer allocation failed'; the persistent cache is not saved in that sandbox. Requalification belongs to AZO-950.",
+    "build_result": "AZO-975 permits 100 cumulative builds under unchanged bounds. Diagnostic build 8, code 8fdabe5fd93dac882ae2b5ab2260f725ebdd02fa: exit 0/36.45s, empty stderr, six gzip cache files, zero webpack WasmHash instances; VmPeak drops from about 32 GiB to 21.6 GiB after native production SHA-256 hashing. Final-head cold/warm build and aggregate requalification evidence belongs to AZO-969/AZO-950, not this code-build claim.",
     "details": "docs/OFFLINE-BUILD.md"
   },
   "upstream_repin": {
@@ -26,7 +26,7 @@
     "previous_sha": "3a978a631ad65529c06e48ce495092d5bba29f46",
     "upstream_delta": { "commits": 14, "files": 48 },
     "candidate_divergence": { "additive": 24, "modified": 18, "total": 42 },
-    "divergence_note": "Counts include AZO-969 font prerequisite, provenance, license, regressions, next.config.mjs webpack cache compression and build documentation.",
+    "divergence_note": "Counts include AZO-969 font prerequisite, provenance, license, regressions, next.config.mjs webpack cache compression/native production hashing and build documentation.",
     "overlapping_overlay_paths": {
       "src/dashboardGuard.js": "Disjoint hunks auto-merged: retain both upstream /api/oauth/minimax-code/lease and /api/oauth/minimax-code-global/lease prefixes in ALWAYS_PROTECTED and LOCAL_ONLY_PATHS, plus the AZOX dedicated Portal bearer gate. Contributor remains absent."
     },

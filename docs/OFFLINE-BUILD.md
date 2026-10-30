@@ -106,7 +106,7 @@ traced the crash path:
 filesystem cache. Webpack caching stays enabled. `tests/unit/webpack-cache.node-test.js`
 failed before the change (`false !== 'gzip'`) and passes after it.
 
-The fourth and final build, exact commit
+The fourth build (the limit then in effect), exact commit
 `f35ddcfae4b898c901946ac159aeb9111478214b`, exited 0 in 36.64 seconds with no
 Google font DNS retry and produced standalone output. Webpack still logged one
 non-fatal warning:
@@ -122,8 +122,44 @@ at that moment was not measured, so the remaining cache allocation cause is
 inferred, not proved. This change turns the fatal crash into a non-fatal cache
 miss; it does not prove cache reuse.
 
+## Native hashing and the remaining address-space pressure
+
+AZO-975 principal approval raised the cumulative build ceiling to 100, keeping
+all sandbox bounds unchanged. Diagnostic builds 5–7 used exact head `abe21486`.
+The cache warning was intermittent: builds 5 and 7 wrote all six gzip cache files;
+build 6 wrote them but failed later with `EMFILE`. Build 5 logged one
+`SQLITE_BUSY` during concurrent page-data initialization. Neither transient error
+is hidden or treated as a clean pass.
+
+The important measurement was virtual address space, not RSS. Build 5 reached
+VmPeak **33,554,308 KiB**, just 124 KiB below the 32 GiB AS limit, while RSS was
+about 1.2–1.5 GiB. Build 6's maps showed about **29,951 MiB of anonymous PROT_NONE
+reservations**, including 4 GiB regions. Build 7 recorded three webpack WasmHash
+instances plus loader-utils, llhttp and parser WASM instances in the build process.
+A dummy-data probe using the real bundled hash implementation measured exactly
+**4 GiB additional VA per held xxhash64 or md4 hash instance**, despite
+`--disable-wasm-trap-handler`. Thus the earlier theory that hundreds of gzip
+streams alone caused the pressure was refuted: only six 100 MiB gzip allocations
+were observed in a cold build. Large gzip buffers then compete with the existing
+WASM reservations at the AS ceiling. The original build-4 caught-error stack was
+not captured; no exact original allocation site is claimed retroactively.
+
+`next.config.mjs` now selects native crypto **SHA-256 for production webpack
+output hashing**, replacing Next's WASM xxhash64 pool. Development hashing is
+unchanged. This affects generated build/cache hash names, not request routing,
+credentials, auth, database schema or runtime behavior. Cache compression remains
+enabled; no limits, tests or assertions are removed. The new production-hash test
+failed before the fix (`xxhash64 !== sha256`), then all four cache/hash tests passed.
+
+Diagnostic build 8 on code commit `8fdabe5fd93dac882ae2b5ab2260f725ebdd02fa`
+exited 0 in 36.45 seconds with empty stderr. It recorded **zero webpack WasmHash
+instances**, VmPeak **22,657,252 KiB**, and all six persistent cache files
+(largest 64,544,960 bytes, below FSIZE 128 MiB). This verifies the prediction that
+native hashing removes about 12 GiB of address-space reservation. Qualification
+must still build the exact final documentation/source head without diagnostic
+wrappers and re-run owning contracts; code-build evidence is not final-head proof.
+
 No resource limit was raised. No network exception, font mock, disabled webpack
-check or changed assertion is part of this change. The fourth build used the last
-authorized attempt. Any later source change needs separately authorized exact-head
-build evidence. Upstream's red baseline stays red. Do not merge, release, build a
+check or relaxed assertion is part of this change. Upstream's red baseline stays
+red. AZO-950 owns aggregate requalification; do not merge, release, build a
 production image or deploy on this evidence.
