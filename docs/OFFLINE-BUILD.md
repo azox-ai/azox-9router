@@ -188,7 +188,25 @@ ranges, lock data and the exact qualification dependency kit are unchanged.
 The first behavioral RED run observed 200 duplicate reads instead of 1 and peak
 40 distinct reads instead of 4. Tests then exercise real temporary files,
 mutation/error cleanup, bounded concurrency, real NFT file/reason parity and CLI
-version passthrough. Final-head build evidence remains a separate requirement.
+version passthrough.
+
+Code commit `22590821772fab8e7090a5480ebd81887568edc0` then passed cold build 13
+in 37.03 seconds and warm build 14 in 23.22 seconds, without diagnostic wrappers,
+with empty stderr. Both emitted the exact vendored Inter bytes (SHA-256
+`693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3`),
+byte-equal public license and standalone server/custom-server. The warm build
+opened all three cache indexes; atime evidence establishes opening, not cache hits.
+
+Separate diagnostic builds 15–16 observed main-process FD peaks of 241 instead
+of the earlier 1,022, and read requests in flight of 211 instead of 1,357. The
+prediction of at most 128 outstanding requests was falsified: instrumentation
+counts requests waiting in queues as well as active reads, and other filesystem
+readers remain. The per-trace limit of 64 is a distinct contract verified by the
+real-file tests. These diagnostic runs support reduced FD pressure, not a
+claim of timing neutrality or a replacement for plain cold/warm qualification.
+The exact final source/documentation head must also have its own evidence on
+AZO-969 before aggregate requalification; the earlier warm-build failure remains
+part of the history.
 
 No resource limit was raised. No network exception, font mock, disabled webpack
 check or relaxed assertion is part of this change. Upstream's red baseline stays

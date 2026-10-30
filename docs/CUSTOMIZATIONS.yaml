@@ -17,7 +17,7 @@
     "distribution_license": "public/fonts/inter-LICENSE.txt",
     "tests": ["tests/unit/offline-inter.node-test.js", "tests/unit/webpack-cache.node-test.js", "tests/unit/build-trace-io.node-test.js"],
     "dependency_delta": "Dependency ranges and lock data unchanged; no installation or kit mutation. Root package.json build script now uses a build-only Node launcher to bound/deduplicate custom NFT reads. Existing postbuild remains. Direct Next CLI/Bun paths are not qualified by this Node fix. Font/license bytes remain pinned.",
-    "build_result": "AZO-975 permits 100 cumulative builds under unchanged bounds. Diagnostic build 8, code 8fdabe5fd93dac882ae2b5ab2260f725ebdd02fa: exit 0/36.45s, empty stderr, six gzip cache files, zero webpack WasmHash instance creations (not a liveness measurement); VmPeak drops from about 32 GiB to 21.6 GiB after native production SHA-256 hashing. Final-head cold/warm build and aggregate requalification evidence belongs to AZO-969/AZO-950, not this code-build claim.",
+    "build_result": "AZO-975 permits 100 cumulative builds under unchanged bounds. Code 22590821772fab8e7090a5480ebd81887568edc0: plain cold13 exit0/37.03s and warm14 exit0/23.22s, empty stderr, six cache files and exact Inter/license output after bounded tracing reads. Diagnostic15/16 main-process fdPeak241 vs prior1022; requested-read peak211, not active-read count. Earlier warm10 EMFILE and full-suite red baseline remain in evidence. Exact final source/docs proof and aggregate requalification belong to AZO-969/AZO-950.",
     "details": "docs/OFFLINE-BUILD.md"
   },
   "upstream_repin": {
