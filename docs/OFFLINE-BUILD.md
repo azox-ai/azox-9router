@@ -135,12 +135,13 @@ The important measurement was virtual address space, not RSS. Build 5 reached
 VmPeak **33,554,308 KiB**, just 124 KiB below the 32 GiB AS limit, while RSS was
 about 1.2–1.5 GiB. Build 6's maps showed about **29,951 MiB of anonymous PROT_NONE
 reservations**, including 4 GiB regions. Build 7 recorded three webpack WasmHash
-instances plus loader-utils, llhttp and parser WASM instances in the build process.
+instance creations plus loader-utils, llhttp and parser WASM creations. The counters
+do not measure simultaneous liveness, GC or exact reservation ownership.
 A dummy-data probe using the real bundled hash implementation measured exactly
 **4 GiB additional VA per held xxhash64 or md4 hash instance**, despite
 `--disable-wasm-trap-handler`. Thus the earlier theory that hundreds of gzip
-streams alone caused the pressure was refuted: only six 100 MiB gzip allocations
-were observed in a cold build. Large gzip buffers then compete with the existing
+streams alone caused the pressure was not supported: six 100 MiB gzip allocations
+were observed, not a census of all streams/native allocations. Large buffers compete with the existing
 WASM reservations at the AS ceiling. The original build-4 caught-error stack was
 not captured; no exact original allocation site is claimed retroactively.
 
@@ -154,10 +155,40 @@ failed before the fix (`xxhash64 !== sha256`), then all four cache/hash tests pa
 Diagnostic build 8 on code commit `8fdabe5fd93dac882ae2b5ab2260f725ebdd02fa`
 exited 0 in 36.45 seconds with empty stderr. It recorded **zero webpack WasmHash
 instances**, VmPeak **22,657,252 KiB**, and all six persistent cache files
-(largest 64,544,960 bytes, below FSIZE 128 MiB). This verifies the prediction that
-native hashing removes about 12 GiB of address-space reservation. Qualification
-must still build the exact final documentation/source head without diagnostic
-wrappers and re-run owning contracts; code-build evidence is not final-head proof.
+(largest 64,544,960 bytes, below FSIZE 128 MiB). The observed peak reduction is
+10,897,056 KiB (about 10.4 GiB), consistent with the predicted mitigation, not a
+direct measurement of exactly 12 GiB freed. Diagnostic wrappers add synchronous
+logging, stacks and sampling: they are not timing-neutral. Build 9 on final head
+`8c277666` passed cold without wrappers; warm build 10 still failed `EMFILE` when
+writing `routes-manifest.json`. Diagnostic builds 11–12 succeeded but do not erase
+that failure. Fresh AZO-980 review therefore required FD remediation before acceptance.
+
+## Bounded tracing reads
+
+Next 16.4.3 supplies NFT a custom `readFile` that bypasses NFT's own cached and
+semaphored reader. Diagnostic logs observed 1,357 reads in flight and 1,022 open
+descriptors, including 842 simultaneous opens of the same `.next/package.json`.
+Read requests and actual open descriptors are distinct measurements.
+
+`npm run build` now enters `scripts/build-next.cjs`, which installs a build-only
+adapter for Next's bundled NFT module before loading the normal Next CLI.
+`scripts/build-trace-io.cjs` wraps only caller-provided tracing reads: coalesce
+identical in-flight string paths, bound distinct reads to 64 per trace invocation,
+and remove entries on success or failure. No result or negative cache persists;
+a subsequent read sees changed bytes. Buffer/string/error semantics and all
+tracing inputs, inclusion rules and outputs remain unchanged. The adapter does
+not patch global fs, write installed dependencies, omit traces, swallow errors,
+raise NOFILE or add retries.
+
+This is an explicit overlay on an internal Next interface. On a Next upgrade,
+review the seam and run the real NFT parity fixture plus cold/warm qualification.
+Direct `next build`, `build:bun`, dev and start bypass it; only the standard Node
+`npm run build` path is qualified here. The package script changes, but dependency
+ranges, lock data and the exact qualification dependency kit are unchanged.
+The first behavioral RED run observed 200 duplicate reads instead of 1 and peak
+40 distinct reads instead of 4. Tests then exercise real temporary files,
+mutation/error cleanup, bounded concurrency, real NFT file/reason parity and CLI
+version passthrough. Final-head build evidence remains a separate requirement.
 
 No resource limit was raised. No network exception, font mock, disabled webpack
 check or relaxed assertion is part of this change. Upstream's red baseline stays
