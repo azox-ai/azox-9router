@@ -152,33 +152,20 @@ jobs:
           path: source
           fetch-depth: 1
 
-      - name: Check out publishing Dockerfile
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.workflow_sha }}
-          path: workflow
-          sparse-checkout: |
-            Dockerfile
-          fetch-depth: 1
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install OCI transport tool
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends --yes skopeo
 
-      - name: Build and push platform image by digest
+      - name: Build platform OCI artifact without publishing
         id: build
         uses: docker/build-push-action@v6
         with:
           context: source
-          file: workflow/Dockerfile
+          file: source/Dockerfile
           platforms: ${{ matrix.platform }}
-          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=oci,dest=${{ runner.temp }}/platform-image.tar
           build-args: |
             APP_VERSION=${{ needs.prepare.outputs.version }}
             ALPINE_MIRROR=${{ vars.ALPINE_MIRROR || 'dl-cdn.alpinelinux.org' }}
@@ -189,41 +176,36 @@ jobs:
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
           cache-from: type=gha,scope=9router-${{ matrix.suffix }}
           cache-to: type=gha,mode=max,scope=9router-${{ matrix.suffix }}
-          provenance: false
-          sbom: false
+          provenance: mode=max
+          sbom: true
 
-      - name: Smoke-test platform image before publishing digest artifact
+      - name: Smoke-test platform image before any registry publication
         env:
-          GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
+          IMAGE_ARCHIVE: ${{ runner.temp }}/platform-image.tar
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.suffix }}
+        run: |
+          bash source/scripts/smoke-platform.sh
+
+      - name: Log in to GHCR after local smoke
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the same OCI artifact with attestations
+        env:
+          IMAGE_ARCHIVE: ${{ runner.temp }}/platform-image.tar
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -Eeuo pipefail
-          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-
-          container="9router-platform-smoke-${GITHUB_RUN_ID}-${{ matrix.suffix }}"
-          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
-
-          docker run --detach \
-            --name "$container" \
-            --platform "$PLATFORM" \
-            --publish 20128:20128 \
-            "${GHCR_IMAGE}@${IMAGE_DIGEST}"
-
-          for attempt in {1..45}; do
-            if curl --fail --silent --show-error http://127.0.0.1:20128/api/health; then
-              echo "${PLATFORM} health check passed"
-              exit 0
-            fi
-            if (( attempt % 5 == 0 )); then
-              echo "Waiting for ${PLATFORM} health check (${attempt}/45)" >&2
-            fi
-            sleep 2
-          done
-
-          echo "${PLATFORM} health check failed; container logs follow:" >&2
-          docker logs "$container" || true
-          exit 1
+          candidate="${GHCR_IMAGE}:candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.suffix }}"
+          skopeo copy --authfile "$HOME/.docker/config.json" --all --preserve-digests \
+            "oci-archive:$IMAGE_ARCHIVE" "docker://$candidate"
+          actual="sha256:$(skopeo inspect --authfile "$HOME/.docker/config.json" --raw "docker://$candidate" | sha256sum | cut -d ' ' -f 1)"
+          test "$actual" = "$IMAGE_DIGEST"
 
       - name: Save image digest
         env:
@@ -255,6 +237,13 @@ jobs:
       packages: write
 
     steps:
+      - name: Check out manifest validator at validated commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          path: source
+          fetch-depth: 1
+
       - name: Download platform digests
         uses: actions/download-artifact@v4
         with:
@@ -303,13 +292,7 @@ jobs:
           docker buildx imagetools inspect "${GHCR_IMAGE}:${VERSION}" | tee "$RUNNER_TEMP/version-manifest.txt"
           docker buildx imagetools inspect --raw "${GHCR_IMAGE}:${VERSION}" > "$RUNNER_TEMP/version-manifest.json"
 
-          expected=$'linux/amd64\nlinux/arm64'
-          actual="$(jq -r '[.manifests[] | select(.platform != null and .platform.os != null and .platform.architecture != null) | "\(.platform.os)/\(.platform.architecture)"] | sort | .[]' "$RUNNER_TEMP/version-manifest.json")"
-          if [[ "$actual" != "$expected" ]]; then
-            echo "Version manifest platforms do not match exactly:" >&2
-            printf '%s\n' "$actual" >&2
-            exit 1
-          fi
+          node source/scripts/validate-image-index.cjs "$RUNNER_TEMP/version-manifest.json"
 
       - name: Smoke-test resolved version manifest
         env:
@@ -363,13 +346,7 @@ jobs:
           docker buildx imagetools inspect "${DOCKERHUB_IMAGE}:${VERSION}" | tee "$RUNNER_TEMP/dockerhub-version-manifest.txt"
           docker buildx imagetools inspect --raw "${DOCKERHUB_IMAGE}:${VERSION}" > "$RUNNER_TEMP/dockerhub-version-manifest.json"
 
-          expected=$'linux/amd64\nlinux/arm64'
-          actual="$(jq -r '[.manifests[] | select(.platform != null and .platform.os != null and .platform.architecture != null) | "\(.platform.os)/\(.platform.architecture)"] | sort | .[]' "$RUNNER_TEMP/dockerhub-version-manifest.json")"
-          if [[ "$actual" != "$expected" ]]; then
-            echo "Docker Hub version manifest platforms do not match exactly:" >&2
-            printf '%s\n' "$actual" >&2
-            exit 1
-          fi
+          node source/scripts/validate-image-index.cjs "$RUNNER_TEMP/dockerhub-version-manifest.json"
 
       - name: Record latest promotion policy
         env:
@@ -407,23 +384,12 @@ jobs:
           docker buildx imagetools inspect "${GHCR_IMAGE}:latest" | tee "$RUNNER_TEMP/ghcr-latest-manifest.txt"
           docker buildx imagetools inspect --raw "${GHCR_IMAGE}:latest" > "$RUNNER_TEMP/ghcr-latest-manifest.json"
 
-          expected=$'linux/amd64\nlinux/arm64'
-          actual="$(jq -r '[.manifests[] | select(.platform != null and .platform.os != null and .platform.architecture != null) | "\(.platform.os)/\(.platform.architecture)"] | sort | .[]' "$RUNNER_TEMP/ghcr-latest-manifest.json")"
-          if [[ "$actual" != "$expected" ]]; then
-            echo "GHCR latest manifest platforms do not match exactly:" >&2
-            printf '%s\n' "$actual" >&2
-            exit 1
-          fi
+          node source/scripts/validate-image-index.cjs "$RUNNER_TEMP/ghcr-latest-manifest.json"
 
           if [[ "$PUBLISH_DOCKERHUB" == "true" ]]; then
             docker buildx imagetools inspect "${DOCKERHUB_IMAGE}:latest" | tee "$RUNNER_TEMP/dockerhub-latest-manifest.txt"
             docker buildx imagetools inspect --raw "${DOCKERHUB_IMAGE}:latest" > "$RUNNER_TEMP/dockerhub-latest-manifest.json"
-            actual="$(jq -r '[.manifests[] | select(.platform != null and .platform.os != null and .platform.architecture != null) | "\(.platform.os)/\(.platform.architecture)"] | sort | .[]' "$RUNNER_TEMP/dockerhub-latest-manifest.json")"
-            if [[ "$actual" != "$expected" ]]; then
-              echo "Docker Hub latest manifest platforms do not match exactly:" >&2
-              printf '%s\n' "$actual" >&2
-              exit 1
-            fi
+            node source/scripts/validate-image-index.cjs "$RUNNER_TEMP/dockerhub-latest-manifest.json"
           fi
 
           {

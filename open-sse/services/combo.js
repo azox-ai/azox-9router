@@ -2,21 +2,33 @@
  * Shared combo (model combo) handling with fallback support
  */
 
-import {
-  checkFallbackError,
-  formatRetryAfter,
-  isModelCompatibilityError,
-} from "./accountFallback.js";
-import {
-  errorResponse,
-  readUpstreamBodyText,
-  rebuildUpstreamResponse,
-  unavailableResponse,
-} from "../utils/error.js";
-import { isAbortError, throwIfAborted, waitWithSignal } from "../utils/abort.js";
+import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
+import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
+import { parseModel } from "./model.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
-import { HTTP_STATUS } from "../config/runtimeConfig.js";
+import { peekStreamForContent, reconstructStream, isNoRetryFinish } from "./emptyFailover.js";
+import {
+  getStickyComboModel,
+  setStickyComboModel,
+  clearStickyComboSession,
+  orderModelsByChoice,
+} from "./systemoneRouter.js";
+
+// Peek a 2xx combo response for real content. Returns null for non-SSE responses (leave
+// them untouched). For SSE, returns { outcome: "content"|"empty", finishReason, response }
+// where `response` is a faithful replay of the original stream (head buffer + live reader).
+async function peekComboResponse(result, log) {
+  const ct = (result.headers.get("content-type") || "").toLowerCase();
+  if (!result.body || !ct.includes("text/event-stream")) return null;
+  const peeked = await peekStreamForContent(result.body);
+  const response = new Response(reconstructStream(peeked.head, peeked.reader, peeked.pendingRead), {
+    status: result.status,
+    statusText: result.statusText,
+    headers: result.headers,
+  });
+  return { outcome: peeked.outcome, finishReason: peeked.finishReason, timedOut: peeked.timedOut, response };
+}
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -25,19 +37,6 @@ const HARD_CAPS = new Set(["vision", "pdf", "audioInput", "videoInput"]);
 // Prefixes used when flattening tool turns into plain prose for panel models.
 const TOOL_CALL_PREFIX = "[Called tools: ";
 const TOOL_RESULT_PREFIX = "[Tool result: ";
-const COMBO_ERROR_BODY_MAX_BYTES = 256 * 1024;
-const COMBO_ERROR_BODY_STALL_TIMEOUT_MS = 5000;
-const FUSION_PANEL_BODY_MAX_BYTES = 8 * 1024 * 1024;
-const FUSION_PANEL_BODY_STALL_TIMEOUT_MS = 15_000;
-const FUSION_JUDGE_TEXT_MAX_CHARS = 16 * 1024 * 1024;
-
-function discardResponseBody(response, reason) {
-  if (!response?.body || response.bodyUsed === true) return;
-  try {
-    const cancellation = response.body.cancel(reason);
-    cancellation?.catch?.(() => {});
-  } catch { /* best-effort connection release */ }
-}
 
 // Flatten tool turns into prose so panel models keep the context but can't loop
 // on tools: drop the request's tools, turn tool/function results into assistant
@@ -265,8 +264,13 @@ export function getRotatedModels(models, comboName, strategy, stickyLimit = 1) {
  * @param {string} [comboName] - Combo name to reset; omit to clear all
  */
 export function resetComboRotation(comboName) {
-  if (comboName) comboRotationState.delete(comboName);
-  else comboRotationState.clear();
+  if (comboName) {
+    comboRotationState.delete(comboName);
+    clearStickyComboSession(comboName);
+  } else {
+    comboRotationState.clear();
+    clearStickyComboSession();
+  }
 }
 
 /**
@@ -289,24 +293,44 @@ export function getComboModelsFromData(modelStr, combosData) {
   return null;
 }
 
-// HTTP Retry-After supports delay-seconds or dates; the legacy JSON field is a
-// timestamp. Reject malformed/overflow dates before they enter the minimum.
-function parseRetryDeadline(value, receivedAt, allowDelaySeconds = false) {
-  // The legacy JSON field may be an epoch timestamp number. HTTP Retry-After
-  // remains string-only and may additionally use delay-seconds.
-  if (typeof value === "number") {
-    return !allowDelaySeconds && Number.isFinite(value) ? value : null;
+/**
+ * Detect whether a 2xx JSON response contains zero usable content
+ * (e.g. empty assistant message with in_progress/incomplete)
+ * so combo fallback can continue to the next model.
+ */
+export function isZeroContentResponse(data) {
+  if (!data || typeof data !== "object") return false;
+
+  // OpenAI chat format
+  if (Array.isArray(data.choices)) {
+    if (data.choices.length === 0) return true;
+    const choice = data.choices[0];
+    if (!choice) return true;
+
+    const msg = choice.message || choice.delta;
+    const content = msg?.content;
+    const hasContent = typeof content === "string" ? content.trim().length > 0 : (Array.isArray(content) && content.length > 0);
+    const hasToolCalls = (Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0) || Boolean(msg?.function_call);
+    const hasReasoning = typeof msg?.reasoning_content === "string" ? msg.reasoning_content.trim().length > 0 : false;
+
+    const finish = choice.finish_reason;
+    const isNormalFinish = finish === "stop" || finish === "length" || finish === "tool_calls" || finish === "function_call";
+
+    if (!hasContent && !hasToolCalls && !hasReasoning && (!isNormalFinish || finish === "in_progress" || finish === "incomplete")) {
+      return true;
+    }
   }
-  if (typeof value !== "string" || !value.trim()) return null;
-  const text = value.trim();
-  let deadline;
-  if (allowDelaySeconds && /^\d+$/.test(text)) {
-    deadline = receivedAt + Number(text) * 1000;
-  } else {
-    if (!Number.isNaN(Number(text))) return null;
-    deadline = Date.parse(text);
+
+  // Anthropic messages format
+  if (Array.isArray(data.content)) {
+    const hasContent = data.content.some((c) => (c.type === "text" && c.text?.trim().length > 0) || c.type === "tool_use");
+    const stopReason = data.stop_reason;
+    if (!hasContent && (!stopReason || stopReason === "in_progress" || stopReason === "incomplete")) {
+      return true;
+    }
   }
-  return Number.isFinite(new Date(deadline).getTime()) ? deadline : null;
+
+  return false;
 }
 
 /**
@@ -317,15 +341,115 @@ function parseRetryDeadline(value, receivedAt, allowDelaySeconds = false) {
  * @param {Function} options.handleSingleModel - Function to handle single model: (body, modelStr) => Promise<Response>
  * @param {Object} options.log - Logger object
  * @param {string} [options.comboName] - Name of the combo (for round-robin tracking)
- * @param {string} [options.comboStrategy] - Strategy: "fallback" or "round-robin"
+ * @param {string} [options.comboStrategy] - Strategy: "fallback", "round-robin", or "smart"
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
- * @param {AbortSignal} [options.signal] - Client cancellation signal
+ * @param {boolean} [options.autoSwitch=true] - Capability auto-switching
+ * @param {string|null} [options.sessionId=null] - Client session identifier for prompt cache retention
+ * @param {string} [options.smartPolicy="smart"] - Policy: "smart" (adaptive ≥80%), "strict" (lock 1st model), "per-turn", or "custom"
+ * @param {boolean} [options.sessionSticky=true] - Keep chosen model across session requests to retain prompt cache
+ * @param {number} [options.confidenceThreshold=0.8] - Minimum confidence required for model switch (0-1)
+ * @param {Function|null} [options.resolveSmartChoice=null] - Smart router resolver callback: (body, models) => Promise<{ choice, probabilities, confidence } | null>
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, signal }) {
-  if (signal?.aborted) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
-  // Apply rotation strategy if enabled
-  let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
+export async function handleComboChat({
+  body,
+  models,
+  handleSingleModel,
+  log,
+  comboName,
+  comboStrategy,
+  comboStickyLimit = 1,
+  autoSwitch = true,
+  sessionId = null,
+  smartPolicy = "smart",
+  sessionSticky = true,
+  confidenceThreshold = 0.8,
+  resolveSmartChoice = null,
+}) {
+  let rotatedModels = models;
+  let activeStickyModel = null;
+
+  if (comboStrategy === "smart") {
+    const policy = (typeof smartPolicy === "string" ? smartPolicy : "smart").toLowerCase();
+    const isPerTurn = policy === "per-turn" || sessionSticky === false;
+    const isStrict = policy === "strict";
+
+    let switchThreshold = 0.8;
+    if (policy === "custom") {
+      const custom = Number(confidenceThreshold);
+      if (Number.isFinite(custom) && custom > 0) switchThreshold = custom;
+    } else if (policy === "smart-switch-70") switchThreshold = 0.7;
+    else if (policy === "smart-switch-90") switchThreshold = 0.9;
+    else if (policy.startsWith("smart-switch") || policy === "smart") {
+      const custom = Number(confidenceThreshold);
+      if (Number.isFinite(custom) && custom > 0) switchThreshold = custom;
+    }
+
+    if (!isPerTurn && sessionId) {
+      activeStickyModel = getStickyComboModel(comboName, sessionId, models);
+    }
+
+    if (activeStickyModel) {
+      if (isStrict) {
+        // Strict Lock: re-use sticky model without invoking System One (0ms, 0 extra tokens)
+        rotatedModels = [activeStickyModel, ...models.filter((m) => m !== activeStickyModel)];
+        log.info("COMBO", `smart-router [strict] locked session "${sessionId}" → ${activeStickyModel}`);
+      } else if (typeof resolveSmartChoice === "function") {
+        // Smart Switch (Adaptive): check if the user's task drastically shifted
+        try {
+          const smartResult = await resolveSmartChoice(body, models);
+          const newChoice = smartResult?.choice;
+          const conf = typeof smartResult?.confidence === "number" ? smartResult.confidence : null;
+
+          if (newChoice && newChoice !== activeStickyModel && models.includes(newChoice) && conf !== null && conf >= switchThreshold) {
+            // Task changed with high confidence: switch model and update session
+            rotatedModels = orderModelsByChoice(models, smartResult);
+            log.info("COMBO", `smart-router [smart-switch] task changed → switched from ${activeStickyModel} to ${newChoice} (confidence: ${conf} >= ${switchThreshold})`);
+            if (sessionId) {
+              setStickyComboModel(comboName, sessionId, newChoice);
+              activeStickyModel = newChoice;
+            }
+          } else {
+            // Stay on current model to preserve warm prompt cache
+            rotatedModels = [activeStickyModel, ...models.filter((m) => m !== activeStickyModel)];
+            log.info("COMBO", `smart-router [smart-switch] retained prompt cache model "${activeStickyModel}"`);
+          }
+        } catch (err) {
+          // Fail open to active sticky model
+          rotatedModels = [activeStickyModel, ...models.filter((m) => m !== activeStickyModel)];
+          log.warn("COMBO", `smart-router error, retained model "${activeStickyModel}"`, { error: err?.message || String(err) });
+        }
+      } else {
+        rotatedModels = [activeStickyModel, ...models.filter((m) => m !== activeStickyModel)];
+      }
+    } else if (typeof resolveSmartChoice === "function") {
+      // Turn 1 or per-turn: evaluate System One to select initial model
+      try {
+        const smartResult = await resolveSmartChoice(body, models);
+        const conf = typeof smartResult?.confidence === "number" ? smartResult.confidence : null;
+
+        if (smartResult?.choice && models.includes(smartResult.choice)) {
+          if (switchThreshold > 0 && conf !== null && conf < switchThreshold) {
+            log.info("COMBO", `smart-router confidence (${conf}) below threshold (${switchThreshold}), fallback to order: [${models.join(", ")}]`);
+          } else {
+            rotatedModels = orderModelsByChoice(models, smartResult);
+            log.info("COMBO", `smart-router selected ${smartResult.choice} (confidence: ${conf ?? "N/A"})`);
+            if (!isPerTurn && sessionId) {
+              setStickyComboModel(comboName, sessionId, smartResult.choice);
+              activeStickyModel = smartResult.choice;
+            }
+          }
+        } else {
+          log.info("COMBO", `smart-router no decision, fallback to order: [${models.join(", ")}]`);
+        }
+      } catch (err) {
+        log.warn("COMBO", `smart-router error, fallback to order: [${models.join(", ")}]`, { error: err?.message || String(err) });
+      }
+    }
+  } else {
+    // Apply rotation strategy if enabled
+    rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
+  }
 
   // Auto-switch: float models that satisfy the request's required capabilities to the front.
   if (autoSwitch) {
@@ -339,65 +463,113 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
     }
   }
   
-  let lastFailure = null;
-  let retryableFailure = null;
+  let lastError = null;
   let earliestRetryAfter = null;
-  let allCredentialsUnavailable = rotatedModels.length > 0;
+  let lastStatus = null;
+  let requestScopedResult = null;
 
   for (let i = 0; i < rotatedModels.length; i++) {
     const modelStr = rotatedModels[i];
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
-      throwIfAborted(signal);
-      let result = await handleSingleModel(body, modelStr, {
+      const result = await handleSingleModel(body, modelStr, {
         combo: comboName || null,
         attempt: i + 1,
       });
-      if (signal?.aborted) {
-        discardResponseBody(result, "combo request aborted");
-        return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
-      }
-      if (result.status === HTTP_STATUS.CLIENT_CLOSED_REQUEST) return result;
       
-      // Success (2xx) - return response
+      // Success (2xx). A 2xx is necessary but NOT sufficient: Gemini aborts (e.g.
+      // MALFORMED_FUNCTION_CALL) still return 200 and stream empty content, which would
+      // otherwise be delivered as a successful empty answer with no failover.
+      // Peek the stream for real content before committing to this candidate.
       if (result.ok) {
-        log.info("COMBO", `Model ${modelStr} succeeded`);
-        return result;
+        let peeked = null;
+        try {
+          peeked = await peekComboResponse(result, log);
+        } catch (peekErr) {
+          // peekStreamForContent is written not to throw; if reconstruction/Response
+          // construction ever does, result.body is already locked by getReader() and can no
+          // longer be streamed. Returning `result` would hand the client a locked, unreadable
+          // body. Degrade to a clean, valid (empty) SSE stream instead.
+          log.warn("COMBO", `empty-peek error on ${modelStr}, returning empty SSE: ${peekErr?.message || peekErr}`);
+          return new Response("data: [DONE]\n\n", {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+
+        if (!peeked) {
+          // Non-streaming (or non-SSE) response — not this peek's job. The zero-content
+          // JSON check still applies on a non-final seat.
+          const isLastModel = i === rotatedModels.length - 1;
+          if (!isLastModel) {
+            const contentType = result.headers?.get?.("content-type") || "";
+            if (contentType.includes("application/json")) {
+              try {
+                const peekBody = await result.clone().json();
+                if (isZeroContentResponse(peekBody)) {
+                  log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with zero usable content, falling back to next model`);
+                  if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
+                    clearStickyComboSession(comboName, sessionId);
+                  }
+                  lastError = "Zero usable content";
+                  lastStatus = 200;
+                  continue;
+                }
+              } catch {
+                // Ignore JSON parse errors
+              }
+            }
+          }
+
+          log.info("COMBO", `Model ${modelStr} succeeded`);
+          return result;
+        }
+
+        if (peeked.outcome === "content") {
+          log.info("COMBO", `Model ${modelStr} succeeded${peeked.timedOut ? " (peek deadline; committed)" : ""}`);
+          return peeked.response;
+        }
+
+        // Empty generation. Fall through to the next candidate unless this is a legitimately
+        // empty class (content filter) or the last candidate — in which case return the
+        // (empty) response as-is, preserving prior behaviour rather than manufacturing a 5xx.
+        const reasonLabel = peeked.finishReason || "no-content";
+        const isLast = i === rotatedModels.length - 1;
+        if (isNoRetryFinish(peeked.finishReason) || isLast) {
+          log.warn("COMBO", `Model ${modelStr} returned empty (${reasonLabel}) — ${isNoRetryFinish(peeked.finishReason) ? "no-retry class" : "last candidate"}, returning as-is`);
+          return peeked.response;
+        }
+
+        log.warn("COMBO", `Model ${modelStr} returned empty (${reasonLabel}) — falling through to next candidate`);
+        if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
+          clearStickyComboSession(comboName, sessionId);
+        }
+        // Drain/close the discarded stream in the background so its usage logging still runs.
+        peeked.response.body?.cancel?.().catch(() => {});
+        lastError = `empty generation (${reasonLabel})`;
+        if (!lastStatus) lastStatus = 502;
+        continue;
+      }
+
+      // If the model that failed was the session-sticky model, clear it so next turns re-evaluate
+      if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
+        clearStickyComboSession(comboName, sessionId);
       }
 
       // Extract error info from response
       let errorText = result.statusText || "";
-      let errorCode = null;
-      const receivedAt = Date.now();
-      let retryAfter = parseRetryDeadline(result.headers?.get?.("Retry-After"), receivedAt, true);
-      let errorBodyText = "";
+      let retryAfter = null;
       try {
-        errorBodyText = await readUpstreamBodyText(result, {
-          signal,
-          maxBytes: COMBO_ERROR_BODY_MAX_BYTES,
-          stallTimeoutMs: COMBO_ERROR_BODY_STALL_TIMEOUT_MS,
-        });
-        const errorBody = JSON.parse(errorBodyText);
+        const errorBody = await result.clone().json();
         errorText = errorBody?.error?.message || errorBody?.error || errorBody?.message || errorText;
-        if (typeof errorBody?.error?.code === "string") errorCode = errorBody.error.code;
-        const jsonRetryAfter = parseRetryDeadline(errorBody?.retryAfter, receivedAt);
-        if (jsonRetryAfter !== null && (retryAfter === null || jsonRetryAfter < retryAfter)) retryAfter = jsonRetryAfter;
+        retryAfter = errorBody?.retryAfter || null;
       } catch {
-        // Ignore malformed, stalled, or oversized diagnostics. Caller abort is
-        // checked below; the bounded reader already cancelled failed bodies.
+        // Ignore JSON parse errors
       }
-      // The bounded reader cancels bodies it cannot consume. Never turn that
-      // failure into a 400 with an empty body; return a bounded diagnostic
-      // instead when this attempt is the final response.
-      result = errorBodyText
-        ? rebuildUpstreamResponse(result, errorBodyText)
-        : result.bodyUsed
-          ? rebuildUpstreamResponse(result, JSON.stringify({ error: { message: errorText || `Upstream HTTP ${result.status}` } }))
-          : result;
 
       // Track earliest retryAfter across all combo models
-      if (retryAfter !== null && (earliestRetryAfter === null || retryAfter < earliestRetryAfter)) {
+      if (retryAfter && (!earliestRetryAfter || new Date(retryAfter) < new Date(earliestRetryAfter))) {
         earliestRetryAfter = retryAfter;
       }
 
@@ -405,25 +577,30 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       if (typeof errorText !== "string") {
         try { errorText = JSON.stringify(errorText); } catch { errorText = String(errorText); }
       }
-      allCredentialsUnavailable &&= result.status === HTTP_STATUS.NOT_FOUND
-        && /^no (?:active )?credentials for provider(?::|\s)/i.test(errorText.trim());
-      throwIfAborted(signal);
 
       // Check if should fallback to next model
-      const isCompatibilityError = isModelCompatibilityError(result.status, errorText);
-      const fallbackDecision = isCompatibilityError
-        ? { shouldFallback: true, cooldownMs: 0 }
-        : result.status === 400
-          ? { shouldFallback: false, cooldownMs: 0 }
-          : checkFallbackError(result.status, errorText);
-      const { shouldFallback, cooldownMs } = fallbackDecision;
+      const { provider } = parseModel(modelStr);
+      const { shouldFallback, cooldownMs, requestScoped } = checkFallbackError(result.status, errorText, 0, provider);
 
-      if (!shouldFallback) {
+      if (!shouldFallback && !requestScoped) {
         log.warn("COMBO", `Model ${modelStr} failed (no fallback)`, { status: result.status });
         return result;
       }
 
-      discardResponseBody(result, "trying next combo model");
+      // A request-scoped 4xx (validation failure, unsupported parameter, context
+      // overflow) says this member cannot serve THIS request — not that the
+      // credential is unhealthy. Members run on different providers with
+      // different validation, so the next member may well serve it. Advance
+      // without a cooldown, and without waiting: there is nothing to recover.
+      // checkFallbackError() reports no account fallback here on purpose (a
+      // request-scoped fault must not evict a healthy account from rotation).
+      if (requestScoped) {
+        log.warn("COMBO", `Model ${modelStr} rejected the request (${result.status}), trying next`, { status: result.status });
+        lastError = errorText || String(result.status);
+        if (!lastStatus) lastStatus = result.status;
+        if (!requestScopedResult) requestScopedResult = result;
+        continue;
+      }
 
       // For transient errors (503/502/504), wait for cooldown before falling through
       // so a briefly-overloaded provider gets a chance to recover rather than being
@@ -431,45 +608,51 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       if (cooldownMs && cooldownMs > 0 && cooldownMs <= 5000 &&
           (result.status === 503 || result.status === 502 || result.status === 504)) {
         log.info("COMBO", `Model ${modelStr} transient ${result.status}, waiting ${cooldownMs}ms before next`);
-        await waitWithSignal(cooldownMs, signal);
+        await new Promise(r => setTimeout(r, cooldownMs));
       }
 
       // Fallback to next model
-      lastFailure = { status: result.status, message: errorText || String(result.status), ...(errorCode ? { code: errorCode } : {}) };
-      if (result.status === HTTP_STATUS.RATE_LIMITED || result.status >= HTTP_STATUS.SERVER_ERROR) {
-        retryableFailure = lastFailure;
-      }
+      lastError = errorText || String(result.status);
+      if (!lastStatus) lastStatus = result.status;
       log.warn("COMBO", `Model ${modelStr} failed, trying next`, { status: result.status });
     } catch (error) {
-      if (isAbortError(error, signal)) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
-      allCredentialsUnavailable = false;
       // Catch unexpected exceptions to ensure fallback continues
-      lastFailure = { status: HTTP_STATUS.SERVER_ERROR, message: String(error?.message || error) };
-      retryableFailure = lastFailure;
-      log.warn("COMBO", `Model ${modelStr} threw error, trying next`, { error: lastFailure.message });
+      if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
+        clearStickyComboSession(comboName, sessionId);
+      }
+      lastError = error.message || String(error);
+      if (!lastStatus) lastStatus = 500;
+      log.warn("COMBO", `Model ${modelStr} threw error, trying next`, { error: lastError });
     }
+  }
+
+  // At least one member rejected the request itself. Hand back that member's own
+  // response — status and body — rather than the synthesized envelope below: the
+  // synthesized one reaches the client as a 200 carrying an error object, which
+  // reads as an empty success, and it buries the member that named the real cause.
+  // This is also what the caller saw before combos advanced on these errors.
+  if (requestScopedResult) {
+    log.warn("COMBO", `No model served the request; returning the first request-scoped failure (${requestScopedResult.status})`);
+    return requestScopedResult;
   }
 
   // All models failed
   // Use 503 (Service Unavailable) rather than 406 (Not Acceptable) — 406 implies
   // the request itself is invalid, but here the providers are simply unavailable
   // or have no active credentials. 503 is more accurate and retryable by clients.
-  // Keep status/message from the same attempt. A temporarily unavailable route
-  // remains retryable even if another model rejects this request's tools.
-  const failure = retryableFailure || lastFailure;
-  const status = allCredentialsUnavailable ? HTTP_STATUS.SERVICE_UNAVAILABLE : (failure?.status || HTTP_STATUS.SERVICE_UNAVAILABLE);
-  const msg = failure?.message || "All combo models unavailable";
+  const allDisabled = lastError && lastError.toLowerCase().includes("no credentials");
+  const status = allDisabled ? 503 : (lastStatus || 503);
+  const msg = lastError || "All combo models unavailable";
 
-  if (earliestRetryAfter !== null) {
-    const retryAt = new Date(earliestRetryAfter).toISOString();
-    const retryHuman = formatRetryAfter(retryAt);
+  if (earliestRetryAfter) {
+    const retryHuman = formatRetryAfter(earliestRetryAfter);
     log.warn("COMBO", `All models failed | ${msg} (${retryHuman})`);
-    return unavailableResponse(status, msg, retryAt, retryHuman);
+    return unavailableResponse(status, msg, earliestRetryAfter, retryHuman);
   }
 
   log.warn("COMBO", `All models failed | ${msg}`);
   return new Response(
-    JSON.stringify({ error: { message: msg, ...(!allCredentialsUnavailable && failure?.code ? { code: failure.code } : {}) } }),
+    JSON.stringify({ error: { message: msg } }),
     { status, headers: { "Content-Type": "application/json" } }
   );
 }
@@ -568,38 +751,14 @@ const FUSION_DEFAULTS = {
   panelHardTimeoutMs: 90000, // absolute cap so one hung model can't stall forever
 };
 
-// Resolve a Response (or {__error}) within ms and signal the underlying call
-// when it loses the timeout race. The promise remains observed so a late abort
-// rejection cannot become unhandled.
-function withTimeout(promise, ms, onTimeout) {
-  let cancel;
-  const wrapped = new Promise((resolve) => {
-    let finished = false;
-    let timer = null;
-    const finish = (value) => {
-      if (finished) {
-        // A provider may ignore the panel abort and resolve after quorum or the
-        // hard timeout. Its late Response is no longer observable by callers,
-        // so explicitly release the body instead of leaving it to GC.
-        discardResponseBody(value, "late fusion panel response");
-        return;
-      }
-      finished = true;
-      if (timer) clearTimeout(timer);
-      resolve(value);
-    };
-    cancel = () => finish({ __cancelled: true });
-    timer = setTimeout(() => {
-      try { onTimeout?.(); } finally { finish({ __timeout: true }); }
-    }, ms);
-    // Keep observing the provider even after cancel() settles this wrapper so
-    // an abort-ignoring call cannot produce an unhandled late rejection.
-    Promise.resolve(promise).then(
-      (value) => finish(value),
-      (error) => finish({ __error: error }),
-    );
+// Resolve a Response (or {__error}) within ms; the loser keeps running but is ignored.
+function withTimeout(promise, ms) {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve({ __timeout: true }), ms);
+    Promise.resolve(promise)
+      .then((v) => { clearTimeout(t); resolve(v); })
+      .catch((e) => { clearTimeout(t); resolve({ __error: e }); });
   });
-  return { promise: wrapped, cancel: () => cancel?.() };
 }
 
 /**
@@ -609,62 +768,33 @@ function withTimeout(promise, ms, onTimeout) {
  * still preferring a full panel when everyone is fast. Bounded by a hard timeout.
  * Returns a sparse array aligned to `calls` (undefined = not yet / dropped).
  */
-function collectPanel(calls, { minPanel, stragglerGraceMs, panelHardTimeoutMs, signal, onFinish }) {
+function collectPanel(calls, { minPanel, stragglerGraceMs, panelHardTimeoutMs }) {
   return new Promise((resolve) => {
     const out = new Array(calls.length);
     let settled = 0;
     let ok = 0;
     let finished = false;
     let graceTimer = null;
-    let hardTimer = null;
     const finish = () => {
       if (finished) return;
       finished = true;
       clearTimeout(hardTimer);
       if (graceTimer) clearTimeout(graceTimer);
-      signal?.removeEventListener("abort", finish);
-      try { onFinish?.(); } finally { resolve(out); }
+      resolve(out);
     };
-    hardTimer = setTimeout(finish, panelHardTimeoutMs);
-    if (signal?.aborted) finish();
-    else signal?.addEventListener("abort", finish, { once: true });
+    const hardTimer = setTimeout(finish, panelHardTimeoutMs);
     calls.forEach((p, i) => {
       Promise.resolve(p)
         .then((v) => { out[i] = v; })
         .catch((e) => { out[i] = { __error: e }; })
         .finally(() => {
           settled++;
-          // Quorum is based on a fully consumed, semantically valid answer.
-          // An HTTP 200 header alone is not success: the body may still stall,
-          // be malformed, or contain no assistant content.
-          if (out[i]?.__answer) ok++;
+          if (out[i] && out[i].ok) ok++;
           if (settled === calls.length) return finish();
           if (ok >= minPanel && !graceTimer) graceTimer = setTimeout(finish, stragglerGraceMs);
         });
     });
   });
-}
-
-async function readFusionPanelAnswer(response, model, signal) {
-  if (!response?.ok) {
-    discardResponseBody(response, "failed fusion panel response");
-    return { __failed: true, status: response?.status };
-  }
-
-  try {
-    const bodyText = await readUpstreamBodyText(response, {
-      signal,
-      maxBytes: FUSION_PANEL_BODY_MAX_BYTES,
-      stallTimeoutMs: FUSION_PANEL_BODY_STALL_TIMEOUT_MS,
-      fatalUtf8: true,
-    });
-    const json = JSON.parse(bodyText);
-    const text = extractPanelText(json);
-    if (!text) return { __failed: true, empty: true };
-    return { __answer: { model, text } };
-  } catch (error) {
-    return { __error: error };
-  }
 }
 
 /**
@@ -683,15 +813,14 @@ async function readFusionPanelAnswer(response, model, signal) {
  * @param {Object} options
  * @param {Object} options.body - Request body (client format)
  * @param {string[]} options.models - Panel model strings
- * @param {Function} options.handleSingleModel - (body, modelStr, isPanel, panelSignal) => Promise<Response>
+ * @param {Function} options.handleSingleModel - (body, modelStr) => Promise<Response>
  * @param {Object} options.log - Logger
  * @param {string} [options.comboName] - Combo name (logging)
  * @param {string} [options.judgeModel] - Judge model; falls back to panel[0]
  * @param {Object} [options.tuning] - Override FUSION_DEFAULTS (minPanel, grace, timeout)
  * @returns {Promise<Response>}
  */
-export async function handleFusionChat({ body, models, handleSingleModel, log, comboName, judgeModel, tuning, signal }) {
-  if (signal?.aborted) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+export async function handleFusionChat({ body, models, handleSingleModel, log, comboName, judgeModel, tuning }) {
   const panel = Array.isArray(models) ? models.filter(Boolean) : [];
   if (panel.length === 0) {
     return new Response(
@@ -725,68 +854,34 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   }
 
   const t0 = Date.now();
-  const panelTasks = panel.map((m) => {
-    const controller = new AbortController();
-    const panelSignal = controller.signal;
-    const task = { controller, settled: false, promise: null, cancel: null };
-    // Defer invocation into a promise so synchronous provider errors are
-    // isolated to that panel member instead of aborting the whole fan-out.
-    // Keep header receipt, complete bounded body consumption and semantic
-    // validation inside the same per-panel deadline. This also lets quorum
-    // count real answers rather than optimistic HTTP 200 responses.
-    const call = Promise.resolve()
-      .then(() => handleSingleModel(panelBody, m, true, panelSignal))
-      .then((response) => readFusionPanelAnswer(response, m, panelSignal));
-    const timed = withTimeout(call, cfg.panelHardTimeoutMs, () => controller.abort());
-    task.cancel = timed.cancel;
-    task.promise = timed.promise
-      .finally(() => {
-        task.settled = true;
-      });
-    return task;
-  });
-  const abortStragglers = () => {
-    for (const task of panelTasks) {
-      if (!task.settled) {
-        task.controller.abort();
-        // Do not retain the timeout or wait for providers that ignore abort.
-        task.cancel();
-      }
-    }
-  };
-  const settled = await collectPanel(panelTasks.map((task) => task.promise), {
-    ...cfg,
-    minPanel,
-    signal,
-    onFinish: abortStragglers,
-  });
-  if (signal?.aborted) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+  const calls = panel.map((m) => withTimeout(handleSingleModel(panelBody, m, true), cfg.panelHardTimeoutMs));
+  const settled = await collectPanel(calls, { ...cfg, minPanel });
   log.info("FUSION", `fan-out collected in ${Date.now() - t0}ms`);
 
   // 2. Collect successful answers.
   const answers = [];
-  let acceptedAnswerChars = 0;
   for (let i = 0; i < settled.length; i++) {
     const res = settled[i];
     const model = panel[i];
     if (!res) { log.warn("FUSION", `Panel ${model} dropped (straggler/timeout)`); continue; }
     if (res.__timeout) { log.warn("FUSION", `Panel ${model} timed out`); continue; }
-    if (res.__error) { log.warn("FUSION", `Panel ${model} failed validation`, { error: res.__error?.message || String(res.__error) }); continue; }
-    if (res.__answer) {
-      if (acceptedAnswerChars + res.__answer.text.length > FUSION_JUDGE_TEXT_MAX_CHARS) {
-        log.warn("FUSION", `Panel ${model} exceeded the aggregate judge-input limit`);
-        continue;
+    if (res.__error) { log.warn("FUSION", `Panel ${model} threw`, { error: res.__error?.message || String(res.__error) }); continue; }
+    if (!res.ok) { log.warn("FUSION", `Panel ${model} failed`, { status: res.status }); continue; }
+    try {
+      const json = await res.clone().json();
+      const text = extractPanelText(json);
+      if (text) {
+        answers.push({ model, text });
+        log.info("FUSION", `Panel ${model} ok (${text.length} chars)`);
+      } else {
+        log.warn("FUSION", `Panel ${model} returned empty content`);
       }
-      answers.push(res.__answer);
-      acceptedAnswerChars += res.__answer.text.length;
-      log.info("FUSION", `Panel ${model} ok (${res.__answer.text.length} chars)`);
-      continue;
+    } catch (e) {
+      log.warn("FUSION", `Panel ${model} unparseable`, { error: e.message || String(e) });
     }
-    log.warn("FUSION", res.empty ? `Panel ${model} returned empty content` : `Panel ${model} failed`, { status: res.status });
   }
 
   // 3. Degrade gracefully when the panel is too thin to fuse.
-  if (signal?.aborted) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
   if (answers.length === 0) {
     log.warn("FUSION", "All panel models failed");
     return new Response(
@@ -805,5 +900,9 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   return handleSingleModel(judgeBody, judge);
 }
 
-// Exposed for regression tests only; not part of the module's runtime contract.
-export const __test__ = { parseRetryDeadline };
+export {
+  getStickyComboModel,
+  setStickyComboModel,
+  clearStickyComboSession,
+  orderModelsByChoice,
+} from "./systemoneRouter.js";

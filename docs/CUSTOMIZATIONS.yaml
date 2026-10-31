@@ -1,233 +1,207 @@
 {
   "schema_version": 3,
-  "format_note": "JSON-compatible YAML; parsed with Node.js JSON.parse to avoid a runtime dependency.",
+  "format_note": "JSON-compatible YAML; no additional parser dependency.",
   "upstream": {
     "repository": "https://github.com/decolua/9router",
-    "ref": "v0.5.95",
-    "sha": "a99cf57239ff778b61e434c2786009d5ed1c412c"
+    "ref": "v0.5.112",
+    "sha": "1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d"
   },
-  "reset": {
-    "date": "2026-10-04",
-    "branch": "yolo/9router-v0.5.95",
-    "baseline": "This branch starts at upstream v0.5.95 SHA a99cf57239ff778b61e434c2786009d5ed1c412c. Azox regression tests were run against clean upstream before the v0.5.91 Azox overlay was adapted to the new release.",
-    "diff_counts": {
-      "additive": 45,
-      "modified": 39,
-      "total": 84,
-      "verify": "git diff --name-status v0.5.95 HEAD | cut -f1 | sort | uniq -c"
+  "fork_baseline": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
+  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry plus AZO-945 Portal access-token-only credential sync plus AZO-969 self-hosted Inter, compressed production webpack cache, native production webpack hashing and bounded tracing reads. AZO-950 completed offline qualification of PR17; its full suite remains red against the documented upstream baseline. AZO-998 aligns both package versions with the proposed v0.5.112-azox.1 tag; no tag is created. AZO-1001 pins the official Node base image digest, commits the qualified root lock and locks the Docker recipe; local candidate qualification is recorded under azo_1001_checkpoint. AZO-999 reconciles the qualified candidate with the pinned fork baseline, carrying narrow telemetry, OAuth transport, error-body bounds and standalone/SQL.js integrity seams. No image was built or run. Integration qualification is recorded in azo_999_checkpoint; it does not authorize merge into master or release.",
+  "build_reproducibility": {
+    "task": "AZO-969",
+    "classification": "carry",
+    "purpose": "Remove build-time Google Fonts fetch without changing Inter normal style, variable 100-900 weights, --font-inter, swap or preload. Gzip the webpack filesystem cache so uncompressed cache-pack writes no longer crash the offline build at the 128 MiB file-size limit. Use native SHA-256 for production webpack hashing so WASM hash reservations do not exhaust the bounded address space. Bound and deduplicate custom NFT reads during the standard Node build to leave FD headroom.",
+    "source": "inter-ui@4.1.0, unmodified full InterVariable.woff2, OFL-1.1",
+    "provenance": "src/app/fonts/inter/PROVENANCE.json",
+    "distribution_license": "public/fonts/inter-LICENSE.txt",
+    "tests": ["tests/unit/offline-inter.node-test.js", "tests/unit/webpack-cache.node-test.js", "tests/unit/build-trace-io.node-test.js"],
+    "dependency_delta": "Dependency ranges and lock data unchanged; no installation or kit mutation. Root package.json build script now uses a build-only Node launcher to bound/deduplicate custom NFT reads. Existing postbuild remains. Direct Next CLI/Bun paths are not qualified by this Node fix. Font/license bytes remain pinned.",
+    "build_result": "AZO-975 permits 100 cumulative builds under unchanged bounds. Code 22590821772fab8e7090a5480ebd81887568edc0: plain cold13 exit0/37.03s and warm14 exit0/23.22s, empty stderr, six cache files and exact Inter/license output after bounded tracing reads. Diagnostic15/16 main-process fdPeak241 vs prior1022; requested-read peak211, not active-read count. AZO-950 final PR17 qualification: cold17 exit0/35.98s and warm18 exit0/22.61s with Node22.23.4/Next16.4.3. Earlier warm10 EMFILE and the red full-suite baseline remain in evidence; these successes do not qualify a modified AZO-998 tree or a container image.",
+    "details": "docs/OFFLINE-BUILD.md"
+  },
+  "upstream_repin": {
+    "decision": "AZO-960: requester chose A2; AZO-961 replays the same four review slices including AZO-959 F-01 onto v0.5.112. No merge, release or rollout authority is implied.",
+    "previous_ref": "v0.5.111",
+    "previous_sha": "3a978a631ad65529c06e48ce495092d5bba29f46",
+    "upstream_delta": { "commits": 14, "files": 48 },
+    "candidate_divergence": { "additive": 27, "modified": 19, "total": 46 },
+    "divergence_note": "Counts include AZO-969 font prerequisite, provenance, license, regressions, next.config.mjs webpack cache compression/native production hashing, bounded build-only tracing reads and build documentation.",
+    "overlapping_overlay_paths": {
+      "src/dashboardGuard.js": "Disjoint hunks auto-merged: retain both upstream /api/oauth/minimax-code/lease and /api/oauth/minimax-code-global/lease prefixes in ALWAYS_PROTECTED and LOCAL_ONLY_PATHS, plus the AZOX dedicated Portal bearer gate. Contributor remains absent."
     },
-    "retired_old_fork_paths": 275,
-    "note": "Upstream-first v0.5.95 overlay preserves the four Azox behavior contracts and gateway monitoring. No retired conversion paths or already absorbed provider capability fixes are replayed. The prior v0.5.91 candidate has not been merged into fork master; this branch integrates its surviving tests and overlay while retaining upstream v0.5.95 routing, model, and OAuth changes."
+    "upstream_only_seams": {
+      "src/app/api/oauth/[provider]/[action]/route.js": "Byte-equal to v0.5.112, including desktop lease-status and lease-connect actions; no Contributor override.",
+      "open-sse/executors/default.js": "Byte-equal to v0.5.112, including CodeBuddy channel identifiers; no AZOX executor override.",
+      "package.json": "Dependency ranges remain equal to v0.5.112. AZO-969 changes the standard build script to scripts/build-next.cjs so traced reads have descriptor headroom. AZO-998 changes root and CLI package versions to 0.5.112-azox.1 to match the proposed Docker-safe prerelease tag; publishing validator and dependency ranges remain unchanged.",
+      "cli/cli.js and src/app/api/version/route.js": "AZO-998 compares numeric upstream release cores without the AZOX suffix, preserving detection of later upstream patch versions. This is not full SemVer prerelease ordering and does not replace the upstream latest-update policy.",
+      "Dockerfile": "AZO-1001 pins node:22.23.4-alpine to the official multi-platform index sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 (linux/amd64 sha256:025b8e975a61d94e33abeafaad1255ef44e4898cf1a1b6446860009c72e6d284, linux/arm64/v8 sha256:fd4a97c1630a4a0a70117dd7b393e322db316d0489bdf36a0e776e7b235341b0, verified against registry response bytes 2026-10-30). Root install is npm ci from the committed AZO-950 qualified lock with lifecycle scripts disabled; better-sqlite3 is rebuilt from locked source with network disabled; Next build runs with network disabled; wreq-js, playwright-core and @wreq-js bindings are copied from that same locked install instead of a second unversioned resolution. Not image-qualified: no image was built or run, Alpine apk packages are unpinned and musl/arm64 native behavior is unverified.",
+      "package-lock.json": "AZO-1001 commits the AZO-950 qualified root lock (input SHA-256 467a653e975305130ae64844825429fe744c656a3acdfeb58e9ac00b32aa601d); only the root version metadata changes to 0.5.112-azox.1. .gitignore now un-ignores the root lock only. tests/unit/docker-lock.node-test.js runs a real offline npm ci --dry-run against it."
+    },
+    "verification": "git diff --name-status 1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d HEAD",
+    "before_host_work": "Update Knowledge authority AUTH-2026-10-27-9ROUTER-V05111-ZBS0 through a focused PR to the newly approved pin before any gated host work. No host work in AZO-961."
+  },
+  "azo_998_checkpoint": {
+    "qualified_local_tree": "eac50e80263bb4c8fa166d7a6ea35a21a3eadd9a",
+    "node_tests": "30/30 passed",
+    "focused_contract_tests": "162/162 passed; expected swallowed-error fixture diagnostics retained",
+    "build": "Build19 exit0/36.75s, standard npm run build, exact Node22.23.4/Next16.4.3 offline kit, unchanged envelope; empty stderr and cold-cache warning in stdout",
+    "full_suite": "4480 total, 4325 ordinary passes, 15 expected failures, 41 assertion failures, 98 skipped, 1 todo, 2 collection errors, 17 unmatched snapshots. All 41 failure identities/messages match PR17; its equal-timestamp DB reorder failure did not recur in that run (it recurred in AZO-1001), not a DB fix. All 38 upstream failures remain plus three prefill policy conflicts. No exclusions.",
+    "later_workflow_wip": "Source and recipe use the same validated commit. OCI export enables provenance/SBOM; local-only smoke precedes registry login/publication. Manifest checks distinguish runtime platforms from linked attestation descriptors. Shell fixtures are not real Docker/skopeo, attestation-content or image qualification. Dockerfile digest/lock remediation, transport and candidate-tag lifecycle remain incomplete; exact final tree needs review and fresh checks. No image built/pushed. Superseded by azo_1001_checkpoint."
+  },
+  "azo_1001_checkpoint": {
+    "qualified_local_tree": "313b79477d397b836df7b9bd206a01af1a098612 (staged on PR17 head cf82bec52b9f7e65a64d1019eb8569e925f716b7)",
+    "lock_regression": "RED without committed lock, then GREEN: offline npm ci --dry-run exits 0; a changed next spec fails with ENOTCACHED after npm attempts registry resolution; no fetch succeeds.",
+    "node_tests": "41/41 passed",
+    "focused_contract_tests": "163/163 passed across 14 files; expected swallowed-error fixture diagnostics retained",
+    "build": "Build20 exit0/36.13s, standard npm run build, exact Node22.23.4/Next16.4.3 offline kit, unchanged envelope; empty stderr",
+    "full_suite": "Candidate exit1: 4480 total, 4339 passed including 15 expected failures, 42 failed, 98 skipped, 1 todo, 17 unmatched snapshots, 2 collection errors. Fresh PR17 baseline (tree e2658009b13bd7be220d30a0fa2c5a6df6884207) exit1: 4480 total, 4340 passed, 41 failed, same skips/snapshots/collection errors. Only extra candidate failure is the known equal-updatedAt reorder tie in db-sqlite-vs-lowdb (expected 'a' to be 'c'); no baseline failure disappeared. Not excluded, not fixed.",
+    "evidence_binding": "Build and full-suite evidence bind to the tree above. Later documentation-only edits are re-checked with Node unit tests only.",
+    "docker_limits": "Not image-qualified: no image built, run or pushed; Alpine apk, skopeo apt install and actions are unpinned; musl/arm64 native rebuild, base-image /usr/local Node header layout and skipped dev unrs-resolver postinstall are unverified inside Docker; OCI transport, digest preservation and SBOM/provenance contents are unverified; candidate tags are not cleaned up; resolved-version smoke publishes 20128 on all runner interfaces."
+  },
+  "historical_diff_counts": {
+    "recorded_v0_5_95_overlay": { "additive": 45, "modified": 39, "total": 84 },
+    "verified_v0_5_95_to_fork_baseline": { "additive": 45, "modified": 42, "total": 87 },
+    "explanation": "The old manifest recorded an earlier overlay snapshot. The pinned fork baseline contains three more modified paths. Neither historical number is the v0.5.112 candidate diff count.",
+    "verify": "git diff --name-status a99cf57239ff778b61e434c2786009d5ed1c412c 1f508bcfa7f2b0e76662be7aefd39d0087747aa5"
   },
   "supported_customizations": {
     "claude_assistant_prefill": {
-      "purpose": "Apply a target-format policy when a request ends with an assistant message: strip by default for Claude Messages, preserve only when x-9router-assistant-prefill is set to preserve, and treat a recognized upstream rejection as model compatibility rather than an account failure.",
+      "classification": "redesign",
+      "purpose": "Preserve assistant history and append a terminal user boundary by default for Claude Messages. Only explicit x-9router-assistant-prefill: preserve opts out.",
+      "acceptance": [
+        "Native Claude, Gemini and Responses assistant tails normalize; explicit preserve works across these source formats.",
+        "Signed native reasoning and opaque redacted reasoning survive, including reasoning-only earlier assistant turns.",
+        "Incomplete tool calls receive ordered error tool results; existing tool-result order remains unchanged.",
+        "Prefill rejection does not mutate account availability; upstream request-scoped combo fallback remains intact."
+      ],
       "primary_paths": [
         "open-sse/translator/concerns/assistantPrefillPolicy.js",
         "open-sse/translator/formats/claude.js",
-        "open-sse/config/errorConfig.js",
-        "open-sse/services/accountFallback.js",
-        "open-sse/services/combo.js",
-        "open-sse/utils/error.js",
-        "src/sse/services/auth.js",
         "open-sse/handlers/chatCore.js"
       ],
-      "tests": [
-        "tests/translator/assistant-prefill-policy.test.js",
-        "tests/unit/account-fallback-prefill.test.js",
-        "tests/unit/combo-fusion.test.js",
-        "tests/unit/combo-retry-after.test.js"
-      ]
-    },
-    "contributor": {
-      "purpose": "Invitation-based contributor onboarding, scoped OAuth completion, contributor sessions, admin invite management, and dashboard navigation.",
-      "primary_paths": [
-        "src/app/(dashboard)/dashboard/contributors/page.js",
-        "src/app/api/contribute/oauth/[provider]/[action]/route.js",
-        "src/app/api/contribute/session/route.js",
-        "src/app/api/contributor-admin/invites/route.js",
-        "src/app/contribute/page.js",
-        "src/app/contribute/[token]/page.js",
-        "src/app/contribute/TokenExchangeClient.js",
-        "src/lib/contributor/session.js",
-        "src/lib/contributor/store.js",
-        "src/dashboardGuard.js",
-        "src/shared/components/Header.js",
-        "src/shared/components/OAuthModal.js",
-        "src/shared/components/Sidebar.js",
-        "src/shared/constants/customNavigation.js",
-        "src/shared/utils/oauthOrigin.js"
+      "unchanged_integration_seams": [
+        "open-sse/services/accountFallback.js",
+        "open-sse/services/combo.js",
+        "open-sse/executors/default.js"
       ],
-      "tests": [
-        "tests/unit/contributor-store.test.js",
-        "tests/unit/contributor-session-origin.test.js",
-        "tests/unit/contributor-oauth-guard.test.js",
-        "tests/unit/contributor-atomic-completion.test.js",
-        "tests/unit/contributor-atomic-sqlite.test.js",
-        "tests/unit/contributor-proxy-atomic.test.js",
-        "tests/unit/contributor-gitlab-oauth-ssrf.test.js",
-        "tests/unit/oauth-register-session.test.js",
-        "tests/unit/custom-navigation.test.js",
-        "tests/unit/contributor-route-hardening.test.js",
-        "tests/unit/contributor-secret.test.js"
-      ]
+      "shared_integration_seams": {
+        "src/sse/services/auth.js": "Not changed by this contract. Changed only by portal_credential_sync (optional Portal token-version guard on health writes); prefill rejection still does not mutate account availability."
+      },
+      "tests": ["tests/unit/azox-prefill-cache.test.js", "tests/unit/azox-prefill-fallback.test.js", "tests/unit/azox-prefill-passthrough.test.js"],
+      "evidence": "AZO-917: 10 initial behavioral RED cases, additional reasoning-history RED; expanded clean-upstream replay 14 failed/11 passed, candidate 25/25 GREEN. Baseline account/combo behavior needed no production patch.",
+      "upstream_expectation_conflicts": "Three original upstream assertions require unconditional assistant-prefill preservation. Kept unchanged and reported as known contract conflicts, not a green upstream suite."
+    },
+    "claude_cache": {
+      "classification": "carry",
+      "purpose": "Keep upstream anchor/budget implementation, normalize single-object system, strip forbidden reasoning markers before budget early return, and mark final tool results after terminal normalization.",
+      "acceptance": [
+        "At most four cache markers after normalization.",
+        "Eligible system and tool head anchors have ttl 1h; deferred tools remain unmarked.",
+        "Thinking and redacted_thinking never carry cache_control.",
+        "Existing markers and over-budget input retain eligible head anchors."
+      ],
+      "tests": ["tests/unit/azox-prefill-cache.test.js", "tests/unit/claude-cache-final-tool-results.test.js", "tests/unit/claude-cache-budget-single-object.test.js"],
+      "evidence": "AZO-917 focused offline tests and full-suite comparison against AZO-916."
     },
     "combo_import_export": {
-      "purpose": "Authenticated combo export and validated atomic import with explicit conflict handling.",
+      "classification": "carry",
+      "decision": "AZO-938 option 1: carry the fork-baseline combo transfer with source runtime semantics; no new whitelist or version rejection without a contract.",
+      "purpose": "Authenticated dashboard export/import of combo definitions plus per-combo routing settings, including Smart metadata, without exporting global settings or secrets.",
+      "acceptance": [
+        "Baseline limits remain: 500 items, 200 models per combo, 2 MiB body, combo name pattern, collision skip/overwrite and an atomic SQLite import transaction.",
+        "Smart smartPolicy, sessionSticky, confidenceThreshold and routerModel round-trip with runtime semantics; inactive judgeModel, routerModel and fusionTuning are retained.",
+        "Unknown strategy settings fields, unknown smartPolicy strings, envelope format and version are not rejected; malformed item types are reported per item.",
+        "Absent saved strategy stays absent; unknown saved fallbackStrategy exports as fallback.",
+        "Rotation resets only on changed imports; storage errors roll back definitions and settings and return a generic message."
+      ],
       "primary_paths": [
-        "src/app/(dashboard)/dashboard/import-export/page.js",
         "src/app/api/import-export/combos/route.js",
         "src/lib/db/repos/combosRepo.js",
-        "src/lib/db/index.js",
-        "src/lib/localDb.js"
+        "open-sse/utils/requestBody.js",
+        "src/app/(dashboard)/dashboard/import-export/page.js"
       ],
-      "tests": [
-        "tests/unit/combo-import-export.test.js"
-      ]
+      "tests": ["tests/unit/combo-import-export.test.js", "tests/unit/combo-import-integration.test.js", "tests/unit/combo-import-storage.test.js", "tests/unit/dashboard-guard.test.js"],
+      "overlay_differences": "Error logs omit the raw error object and non-body import errors return a generic message (log hardening versus the fork baseline).",
+      "evidence": "AZO-936 offline sandbox: RED 9 failing before the overlay fix, focused 72/72 passing, full suite 4337/4193/45 with no new failures versus the PR #10 source run (4291/4147/45).",
+      "deployed": false
     },
     "portal_credential_sync": {
-      "upgrade_critical": true,
-      "purpose": "Consume access-token-only Codex and Claude credentials from AZOX LLM Portal without sharing rotating OAuth refresh tokens between processes.",
-      "authority_contract": "LLM Portal is the sole refresh-token owner. 9Router must never accept, retain, or locally rotate a Portal refresh token. A Portal push is the only credential update authority for rows identified by providerSpecificData.portalExternalId.",
+      "classification": "carry",
+      "decision": "AZO-945: carry the fork-baseline Portal credential sync as an access-token-only contract; Portal is the sole refresh-token owner.",
+      "purpose": "Let the AZOX Portal push, read and revoke Claude/Codex OAuth access tokens for Portal-managed connections through a machine-to-machine route, without the router ever holding or rotating a Portal refresh token.",
+      "acceptance": [
+        "/api/internal/portal/* is admitted only with Authorization: Bearer PORTAL_SYNC_TOKEN (constant-time compare); an unset token, another scheme, a dashboard session or an API key gets 401, and the Portal token opens no other route.",
+        "PUT accepts claude/codex only, an access token, a valid expiresAt and a positive integer tokenVersion; it never accepts or stores a refresh token and removes any stale stored one.",
+        "Rows keep portalExternalId plus a monotonic portalTokenVersion; an older version is rejected with 409, a same-version replay heals health/metadata without replacing the token, a provider change is rejected, and every write is one SQLite transaction.",
+        "DELETE tombstones the external ID in the same transaction, so a late PUT cannot revive a revoked identity; dashboard deletes tombstone Portal rows too.",
+        "Normal create/update cannot claim or rewrite Portal identity, access token, expiry or version; direct-login dedup never merges onto a Portal row.",
+        "Background refresh, request-path checkAndRefreshToken and the usage-route refresh skip Portal rows; no path deactivates or expires a Portal row for a missing refresh token.",
+        "Chat health writes (error lock and success clear) are pinned to the Portal token version the request used, so a late result cannot touch a rotated credential.",
+        "importDb never restores Portal rows from a snapshot, keeps live Portal rows and their tombstones, and rejects an imported ID that collides with a live Portal row.",
+        "Direct-login OAuth refresh, dedup and health behavior are unchanged."
+      ],
       "primary_paths": [
         "src/app/api/internal/portal/connections/[externalId]/route.js",
-        "src/lib/auth/portalSync.js"
+        "src/lib/auth/portalSync.js",
+        "src/dashboardGuard.js",
+        "src/lib/db/repos/connectionsRepo.js",
+        "src/lib/db/index.js",
+        "src/sse/services/backgroundTokenRefresh.js",
+        "src/sse/services/tokenRefresh.js",
+        "src/app/api/usage/[connectionId]/route.js",
+        "src/sse/services/auth.js",
+        "src/sse/handlers/chat.js"
       ],
       "tests": [
         "tests/unit/portal-sync-route.test.js",
         "tests/unit/portal-sync-atomic.test.js",
-        "tests/unit/chat-account-mutation-order.test.js",
-        "tests/unit/streaming-html-account-health.test.js"
+        "tests/unit/portal-refresh-exclusion.test.js",
+        "tests/unit/background-token-refresh.test.js",
+        "tests/unit/dashboard-guard.test.js",
+        "tests/unit/db-sqlite-vs-lowdb.test.js"
       ],
-      "required_upgrade_checks": [
-        "Preserve access-token-only writes and explicitly remove any stale stored refreshToken on update.",
-        "Preserve providerSpecificData.portalExternalId and monotonic portalTokenVersion ordering; reject stale versions without replacing a newer token.",
-        "Do not add Portal-managed rows to any local background refresh or missing-refresh-token deactivation path.",
-        "Keep direct-login OAuth refresh behavior unchanged for rows without portalExternalId.",
-        "Run the portal sync regression test and a production-style Codex and Claude smoke before rollout."
+      "overlay_differences": "Not carried from the fork baseline: account-mutation-attempt ordering and generic shouldCommit/beforeCommit/afterCommit/signal hooks (no v0.5.112 caller); only the Portal token-version guard is passed through chat health writes. Added beyond the fork baseline: request-path and usage-route refresh skip Portal rows.",
+      "limitations": [
+        "PORTAL_SYNC_TOKEN must be configured out of band; without it the route fails closed (401). No token rotation or per-caller identity beyond the shared bearer.",
+        "Only claude and codex providers are accepted.",
+        "When a Portal access token expires the router does not refresh it; requests fail upstream until the Portal pushes a newer tokenVersion.",
+        "Production Codex/Claude smoke, Portal end-to-end sync and network exposure of the internal route are deferred to the qualification/rollout gate (AZO-906)."
       ],
-      "incident_reference": "On 2026-09-11/12 OmniRoute, not 9Router, misclassified Portal-managed rows with no refresh token and eventually deactivated Codex, surfacing HTTP 429 after retries. The shared root contract is nevertheless upgrade-critical for both routers because giving either router the rotating refresh token would create cross-router invalidation races."
+      "evidence": "AZO-945 offline sandbox: RED 25 failing plus the route suite unloadable before implementation; focused 101/101 passing; full suite 4376/4232/45 with no new failure file versus the AZO-936 baseline; eslint clean on changed sources. AZO-959 F-01 remediation: an ordinary (non-Portal) row update now strips portalExternalId/portalTokenVersion at the repository boundary; RED regression and native better-sqlite3 rehearsal recorded on AZO-959.",
+      "deployed": false
     }
   },
-  "retained_dependency_closure": {
-    "request_and_runtime_helpers": [
-      "open-sse/config/runtimeConfig.js",
-      "open-sse/services/modelCatalogResponse.js",
-      "open-sse/translator/concerns/hostedToolPolicy.js",
-      "open-sse/translator/schema/blocks.js",
-      "open-sse/utils/abort.js",
-      "open-sse/utils/requestBody.js",
-      "src/sse/handlers/chat.js",
-      "src/sse/utils/gatewayMonitoring.js"
-    ],
-    "oauth_and_connection_atomicity": [
-      "src/app/api/oauth/[provider]/[action]/route.js",
-      "src/lib/db/repos/connectionsRepo.js",
-      "src/lib/oauth/providerHelpers.js",
-      "src/lib/oauth/providers/gitlab.js",
-      "src/lib/oauth/providers/xai.js",
-      "src/lib/oauth/services/qoder.js",
-      "src/lib/oauth/utils/server.js",
-      "src/lib/oauth/utils/xaiHttp.js",
-      "src/shared/utils/apiKey.js",
-      "src/lib/contributor/supportedProviders.js",
-      "open-sse/shared/zedAuth.js"
-    ],
-    "database_integrity": [
-      "src/lib/db/adapters/sqljsAdapter.js",
-      "src/lib/db/backup.js",
-      "src/lib/db/repos/usageRepo.js"
-    ],
-    "standalone_build": [
-      "Dockerfile",
-      "next.config.mjs",
-      "package-lock.json",
-      "scripts/copy-standalone-assets.mjs",
-      "tests/unit/standalone-assets.test.js"
-    ],
-    "rationale": "These files are retained because the supported features import their symbols or rely on their atomicity, bounded-request, OAuth-origin, database, or standalone-image contracts. Several are whole-file carryovers and therefore include hardening beyond the three user-facing customizations; they must remain regression-tested and are candidates for later surgical reduction."
-  },
-  "verification": {
-    "pure_upstream_full_suite": "Pristine upstream v0.5.95: 328 files, 39 failed / 273 passed / 16 skipped; 100 assertion failures, 2,945 passed, 14 expected failures, 98 skipped, 1 todo. The suite remains red on upstream alone. Azox contract tests applied to upstream production code: 19 files failed, 58 assertions or collections failed, 15 passed (73 tests).",
-    "overlay_full_suite": "Candidate v0.5.95 overlay: 347 files, 41 failed / 290 passed / 16 skipped; 103 assertion failures, 3,178 passed, 14 expected failures, 98 skipped, 1 todo (3,394 tests). Comparing exact failing test identities with pristine upstream: six candidate-only failures are upstream tests assuming an unchanged Claude assistant-prefill or system-cache policy; three upstream database concurrency failures resolved. These six differences remain visible and require explicit review; do not label the raw full suite green.",
-    "azox_contract_suite": "19 selected contract files, 217 tests passed, 0 failed on candidate after sanitized OAuth fatal-poll fix. On clean upstream, the same selected suites had 58 failures and 15 passes.",
-    "oauth_zed_conflict_suite": "Contributor guard, OAuth registration and GLM OAuth: 3 files / 75 tests passed; fixed fatal post-exchange polling flag after a failing regression test.",
-    "gateway_monitoring": "node --test tests/unit/gateway-monitoring.node-test.js: 2 passed; node-only test excluded from Vitest discovery.",
-    "live_production": "Not run. No deployment requested or performed.",
-    "live_claude_prefill": "Not run. Preserve escape hatch and default terminal-user policy tested offline only.",
-    "review_focused_suite": "Portal atomicity, Portal route, contributor OAuth, OAuth registration, Sonnet 5.5 and combo context: 6 files / 102 tests passed. Qoder, GitLab, catalog, Portal and fallback selected suite: 5 files / 100 tests passed.",
-    "build": "npm ci --legacy-peer-deps succeeded with v0.5.95 lockfile; npm run build compiled and generated 154 static pages. No production image built.",
-    "security_review": "Release remains blocked: auth/credential and contributor changes require principal final review under SAFE-050, independent security review, current deployed source/image and rollback verification, and staging integration smoke before merge/tag. No production deploy, merge, or tag requested or performed."
-  },
-  "maintenance_rules": [
-    "Compare this manifest and its counts with git diff --name-status against upstream_sha before release.",
-    "Treat supported_customizations.portal_credential_sync as upgrade-critical: every upstream merge, rebase, reset, authentication refactor, or credential-health change requires an explicit contract review and the listed regression checks.",
-    "Do not restore retired Responses/SSE conversion seams without isolated regression tests covering content loss, duplicate content, stream and non-stream parity, and InvalidStreamResponseError.",
-    "Keep additive helpers additive where possible; reduce whole-file dependency carryovers only with feature-level and baseline tests.",
-    "Update upstream.ref, upstream.sha, diff counts, retained paths, tests, and known behavior losses together on every upstream reset."
-  ],
-  "restored_to_upstream_seams": {
-    "note": "Fork modifications to these seams were dropped and the files now match upstream byte-for-byte. They are live upstream code — do not delete them.",
-    "paths": [
-      "open-sse/handlers/chatCore/nonStreamingHandler.js",
-      "open-sse/handlers/chatCore/sseToJsonHandler.js",
-      "open-sse/handlers/responsesHandler.js",
-      "open-sse/executors/codex.js",
-      "open-sse/transformer/responsesTransformer.js",
-      "open-sse/transformer/streamToJsonConverter.js"
-    ]
-  },
-  "deleted_fork_only_files": {
-    "note": "Fork inventions with no upstream counterpart, removed by the reset.",
-    "paths": [
-      "open-sse/utils/streamContract.js"
-    ]
-  },
-  "review_fixes": {
-    "note": "Defects found by independent review of the reset branch and fixed in place.",
-    "items": [
-      "chatCore now maps ToolCompatibilityError to HTTP 400 instead of letting it escape as an opaque 500 that a combo would retry.",
-      "chatCore passes raw client headers to normalizeClaudePassthrough so x-9router-assistant-prefill: preserve works on native passthrough.",
-      "The prefill policy keeps a trailing turn holding signed or redacted reasoning instead of silently dropping unregenerable provider history.",
-      "GET /api/contributor-admin/invites now enforces the same-origin check its mutating siblings use.",
-      "Both contributor routes use the bounded JSON reader with an explicit byte cap and reject malformed bodies with 400 rather than 500.",
-      "The invite route no longer returns raw internal error messages.",
-      "The contributor session secret only self-creates when genuinely absent or empty, uses exclusive create, and propagates other IO faults instead of rotating the live secret.",
-      "Combo import rejects a zero-model combo that would persist but never route.",
-      "parseRetryDeadline again accepts a numeric epoch retryAfter from the JSON error body, restoring the Retry-After signal.",
-      "The import/export route imports @/lib/db/index.js instead of the localDb compat shim."
-    ]
-  },
-  "known_inert_carryovers": {
-    "note": "Only the pending-session timestamp remains inert; request-scoped account ordering and combo abort propagation have active callers on this branch.",
-    "items": [
-      "src/lib/oauth/utils/server.js records createdAt on pending sessions but nothing reads or sweeps it."
-    ]
-  },
-  "qualification": {
-    "method": "Run Azox behavior/contract tests against pure upstream before applying any downstream production code.",
-    "upstream_ref": "v0.5.95",
-    "sampled_contracts": {
-      "claude_assistant_prefill": "missing",
-      "contributor": "missing",
-      "combo_import_export": "missing",
-      "portal_credential_sync": "missing",
-      "gateway_monitoring": "missing"
+  "azo_999_checkpoint": {
+    "base": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
+    "candidate": "279d7f13feed6c53671e838d54b334b6b75dcb2b",
+    "resolution": "127 conflicted paths plus 51 clean-but-divergent paths reconciled against the candidate and explicit contracts. No Contributor routes or retired Responses/SSE converter restored. Preserve both parent histories; no master write or release.",
+    "retained_dependency_closure": {
+      "telemetry": ["src/sse/utils/gatewayMonitoring.js", "src/sse/handlers/chat.js", "open-sse/services/combo.js"],
+      "bounded_transport": ["open-sse/utils/error.js", "open-sse/services/modelCatalogResponse.js", "open-sse/utils/abort.js", "src/lib/oauth/providerHelpers.js", "src/lib/oauth/providers/gitlab.js", "src/lib/oauth/providers/xai.js", "src/lib/oauth/utils/xaiHttp.js", "src/lib/oauth/services/qoder.js"],
+      "integrity": ["open-sse/handlers/chatCore/streamingHandler.js", "scripts/copy-standalone-assets.mjs", "src/lib/db/adapters/sqljsAdapter.js", "src/lib/db/backup.js", "src/shared/utils/apiKey.js"],
+      "reduction": "Only awaitWithSignal and bounded model catalog reads retain live callers; unused runModelCatalogRefresh and old abort exports are omitted. Error reader port retains provider status/reset fields and candidate error response signatures; unused rebuildUpstreamResponse omitted. Combo JSON success peeks and fusion panel parsing stay upstream v0.5.112: a shared small cap would reject legitimate large successful completions, and reconstructing their responses would redesign upstream flow. Non-ok provider bodies are capped by parseUpstreamError before chatCore returns its local error response. No claim that every upstream success body or upstream JSON peek is bounded."
     },
-    "absorbed": {
-      "provider_aware_model_modalities": "Upstream v0.5.95 retains provider-aware catalog modality lookup and shared globalThis catalog source. Azox model-catalog-scope tests passed and the old capabilities.js override was not ported.",
-      "request_scoped_4xx_no_cooldown": "Upstream v0.5.95 still handles generic request-scoped 4xx without account cooldown. The overlay retains explicit model-compatibility classifiers for Azox prefill only.",
-      "claude_prefill_cleanup": "Upstream v0.5.95 restores a user turn after cleanup but intentionally preserves client assistant prefills. Azox target policy still adds a user turn by default and preserves the assistant only with x-9router-assistant-prefill: preserve; upstream prefill tests conflict and remain six documented differences together with Azox system-cache anchoring.",
-      "codex_unicode_pattern": "Upstream PR #3938 is closed without merge; no Codex Unicode schema patch copied. Retest the exact behavior before carrying it as a future separate fix."
-    },
-    "conflicts_resolved": [
-      "Preserved upstream Xiaomi MiMo OAuth while retaining contributor proxy ownership and secret-in-query rejection.",
-      "Preserved upstream Zed systemId, retry-listener lifecycle and provider error behavior while binding contributor sessions to their reservation and proxy generation.",
-      "Preserved upstream provider-aware Qoder userInfoUrl while retaining bounded response reads.",
-      "Preserved upstream v0.5.95 Claude Sonnet 5.5 request handling, container_upload, trailing-user cleanup and final-tool-result caching; Azox prefill policy creates six documented upstream-test differences, not an undisclosed green suite.",
-      "Preserved upstream providerOverrides and Codex [1m] requested-model selection while wiring Azox guarded account mutation, request cancellation, and gateway telemetry.",
-      "Preserved upstream OAuthModal lifecycle and reapplied only the apiBase seam required by the contributor flow; retained upstream GLM/Muse device polling fatal flag after an explicit RED/GREEN test.",
-      "Preserved upstream tool-result image hoisting and the Azox selected-tool compatibility guard."
-    ]
+    "regressions": "New carries exercised RED before port: OAuth bounds, HTML-before-success, standalone assets, SQL.js backup, API key validation and gateway monitoring call sites. Bounded error parsing RED 5 failed/2 guard passes; GREEN all seven in the full suite. Combo callback tests explicitly include telemetry metadata; no status/fallback expectation changed.",
+    "full_suite": "Initial integration run: 4539 total, 4399 passed including expected failures, 41 assertion failures, 98 skipped, 1 todo. All 41 assertion identities match AZO-1001 baseline (4480 total, 4340 passed, 41 failed); no failed suite added or removed. Existing collection/snapshot failures are not excluded. Exact final tree, build and final AZOX test receipts belong to the PR/issue evidence, not this self-referential manifest.",
+    "limits": "Offline source-only qualification; no OAuth, inference, live data, image, SSH or deploy. Production and upstream success-body bounds remain unverified. Manager self-review is not independent review."
+  },
+  "retired_customizations": {
+    "contributor": {
+      "classification": "retire",
+      "decision": "AZO-927: requester removed AZOX Contributor onboarding from the v0.5.111 target.",
+      "reason": "The unfinished AZO-919 partial implementation was not accepted; keeping its public session exchange, admin invite route, dashboard guard exception or OAuth connection override would reintroduce an unauthorized feature.",
+      "candidate": "No AZOX Contributor overlay is carried from f08475cc0c6b9b81e0e54a0df9cf2eff7d3b8ab3; upstream direct-login OAuth remains unchanged. connectionsRepo.js and dashboardGuard.js differ from upstream only for portal_credential_sync (Portal identity guards and the dedicated /api/internal/portal/ bearer gate); neither carries a Contributor reservation commit hook or guard exception.",
+      "deployed": false,
+      "limitations": "Source-only retirement on this review branch. No claim about the currently deployed service. OpenCode/Muse model names containing contributor are upstream model IDs, not AZOX Contributor onboarding."
+    }
+  },
+  "provisional_contracts": {
+    "portal": "Promoted to tested contract supported_customizations.portal_credential_sync (AZO-945); production smoke still gated.",
+    "gateway_monitoring": "AZO-999 qualifies only local structured metadata events and correlation/alias headers with direct/combo call-site tests; no external consumer, token, body or exception payload is claimed."
+  },
+  "review": {
+    "independent_review": false,
+    "limitations": "Manager self-review is not independent review. AZO-961's original build was not run with its alternate diagnostic kit; AZO-950 later qualified PR17 using the exact Node22.23.4/Next16.4.3 kit. Upstream full suite: 4367 total, 4230 passed (including 15 expected failures), 38 assertion failures, 98 skipped, 1 todo and 2 collection errors. PR17: 4480 total, 4339 passed (including 15 expected failures), 42 assertion failures, 98 skipped, 1 todo and 2 collection errors. All 38 common failures retain their identities/messages; candidate adds three explicit prefill policy conflicts and one equal-updatedAt reorder failure. Both sides retain 17 unmatched snapshots. Missing lowdb and the absent cloud embeddings module are not repaired or excluded to manufacture a green suite. AZO-1001 freshly qualified its staged tree locally (azo_1001_checkpoint) with the same red full-suite comparison; PR17 and AZO-1001 qualification is not release, master integration or image qualification. No live OAuth/inference/deploy validation. AZO-945 Portal sync remains offline-only; production Codex/Claude smoke is deferred to the qualification/rollout gate."
   }
 }

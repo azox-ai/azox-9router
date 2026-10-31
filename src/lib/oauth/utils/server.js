@@ -11,99 +11,6 @@ function isLoopbackOrigin(origin) {
   return /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin);
 }
 
-function proxyOwnerKey(contributorReservationHash) {
-  return contributorReservationHash
-    ? `contributor:${contributorReservationHash}`
-    : "normal";
-}
-
-let proxyGenerationSequence = 0;
-
-function nextProxyGeneration() {
-  proxyGenerationSequence += 1;
-  if (!Number.isSafeInteger(proxyGenerationSequence)) proxyGenerationSequence = 1;
-  return proxyGenerationSequence;
-}
-
-function canStopProxy(
-  currentOwnerKey,
-  currentGeneration,
-  contributorReservationHash,
-  expectedGeneration,
-) {
-  if (!currentOwnerKey) return true;
-  if (currentOwnerKey !== proxyOwnerKey(contributorReservationHash)) return false;
-  return expectedGeneration == null || currentGeneration === expectedGeneration;
-}
-
-function isActiveProxyGeneration(
-  server,
-  activeServer,
-  expectedOwnerKey,
-  currentOwnerKey,
-  expectedGeneration,
-  currentGeneration,
-) {
-  return (
-    server === activeServer
-    && expectedOwnerKey === currentOwnerKey
-    && expectedGeneration === currentGeneration
-  );
-}
-
-function isSessionBoundToGeneration(session, ownerKey, generation) {
-  return (
-    session?._proxyOwnerKey === ownerKey
-    && session?._proxyGeneration === generation
-  );
-}
-
-function claimSessionForGeneration(session, ownerKey, generation) {
-  if (
-    !isSessionBoundToGeneration(session, ownerKey, generation)
-    || session.status !== "pending"
-  ) return false;
-  session.status = "exchanging";
-  return true;
-}
-
-function isSessionInFlight(session) {
-  return session?.status === "pending" || session?.status === "exchanging";
-}
-
-function staleProxyCallbackError(provider) {
-  const error = new Error(`${provider} OAuth callback no longer belongs to the active login session`);
-  error.status = 409;
-  error.code = "OAUTH_PROXY_STALE_GENERATION";
-  return error;
-}
-
-function rejectStaleProxyCallback(res, provider) {
-  const error = staleProxyCallbackError(provider);
-  res.writeHead(409, { "Content-Type": "text/html; charset=utf-8" });
-  res.end(renderCodexResultPage(false, error.message));
-}
-
-function clearPendingMapSessionsForGeneration(sessions, generation) {
-  for (const [state, session] of sessions) {
-    if (session?._proxyGeneration === generation && isSessionInFlight(session)) {
-      sessions.delete(state);
-    }
-  }
-}
-
-function hasMapSessionForGeneration(sessions, ownerKey, generation) {
-  for (const session of sessions.values()) {
-    if (isSessionBoundToGeneration(session, ownerKey, generation)) return true;
-  }
-  return false;
-}
-
-function clearPendingSingletonSessionForGeneration(session, generation) {
-  if (session?._proxyGeneration === generation && isSessionInFlight(session)) return null;
-  return session;
-}
-
 
 /**
  * Start a local HTTP server to receive OAuth callback
@@ -221,8 +128,6 @@ export function waitForCallback(timeoutMs = 300000) {
 // Singleton proxy server for Codex OAuth callback on fixed port
 let codexProxyServer = null;
 let codexProxyTimeout = null;
-let codexProxyOwnerKey = null;
-let codexProxyGeneration = null;
 
 const CODEX_PROXY_TIMEOUT_MS = 300000; // 5 minutes
 const CODEX_PORT = CODEX_CONFIG.fixedPort;
@@ -234,27 +139,11 @@ const pendingExchanges = new Map();
  * Register a pending exchange session for server-side mode.
  * Modal client calls this before opening popup.
  */
-export function registerCodexSession({
-  state,
-  codeVerifier,
-  redirectUri,
-  commitProviderConnection,
-  contributorReservationHash,
-}) {
+export function registerCodexSession({ state, codeVerifier, redirectUri }) {
   if (!state || !codeVerifier || !redirectUri) return false;
-  const ownerKey = proxyOwnerKey(contributorReservationHash);
-  if (
-    !codexProxyServer
-    || !codexProxyGeneration
-    || codexProxyOwnerKey !== ownerKey
-  ) return false;
   pendingExchanges.set(state, {
     codeVerifier,
     redirectUri,
-    commitProviderConnection,
-    contributorReservationHash,
-    _proxyOwnerKey: ownerKey,
-    _proxyGeneration: codexProxyGeneration,
     status: "pending",
     createdAt: Date.now(),
   });
@@ -271,9 +160,8 @@ export function getCodexSessionStatus(state) {
 /**
  * Clear a session (called after modal consumes status).
  */
-export function clearCodexSession(state, expectedSession = null) {
-  if (expectedSession && pendingExchanges.get(state) !== expectedSession) return false;
-  return pendingExchanges.delete(state);
+export function clearCodexSession(state) {
+  pendingExchanges.delete(state);
 }
 
 function escapeHtml(str) {
@@ -283,43 +171,6 @@ function escapeHtml(str) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-}
-
-function proxyPublicErrorMessage(error) {
-  const status = Number(error?.status);
-  const message = typeof error?.message === "string" ? error.message.trim() : "";
-  // Explicit 4xx statuses are reserved for local ownership/session failures.
-  // Provider exceptions can contain raw response bodies that echo credentials.
-  if (Number.isInteger(status) && status >= 400 && status < 500 && message && message.length <= 512) {
-    return message;
-  }
-  return "OAuth authentication failed";
-}
-
-function writeProxyFailure(session, res, renderPage, error) {
-  const publicMessage = proxyPublicErrorMessage(error);
-  session.status = "error";
-  session.error = publicMessage;
-  session.errorStatus = Number(error?.status) || null;
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-  res.end(renderPage(false, publicMessage));
-}
-
-async function persistProxyConnection(session, connectionData, shouldCommit) {
-  if (shouldCommit && !shouldCommit()) {
-    throw staleProxyCallbackError(connectionData.provider);
-  }
-  if (typeof session?.commitProviderConnection === "function") {
-    const connection = await session.commitProviderConnection(connectionData);
-    if (connection) return connection;
-    const error = new Error("Contribution reservation is no longer valid");
-    error.status = 409;
-    throw error;
-  }
-  const { createProviderConnection } = await import("@/models");
-  const connection = await createProviderConnection(connectionData, { shouldCommit });
-  if (!connection) throw staleProxyCallbackError(connectionData.provider);
-  return connection;
 }
 
 function renderCodexResultPage(success, message) {
@@ -340,37 +191,14 @@ function renderCodexResultPage(success, message) {
  * Mode A (server-side): if any session was registered, proxy auto-exchanges + saves DB.
  * Mode B (channel fallback): if no session, proxy 302 redirects to app port for legacy channel-based flow.
  */
-export function startCodexProxy(appPort, contributorReservationHash) {
+export function startCodexProxy(appPort) {
   return new Promise((resolve) => {
-    const requestedOwnerKey = proxyOwnerKey(contributorReservationHash);
-    if (codexProxyOwnerKey) {
-      if (codexProxyOwnerKey !== requestedOwnerKey) {
-        resolve({ success: false, reason: "Codex callback proxy is already in use" });
-        return;
-      }
-      if (!codexProxyServer) {
-        resolve({ success: false, reason: "Codex callback proxy is still starting" });
-        return;
-      }
+    if (codexProxyServer) {
       resolve({ success: true });
       return;
     }
-    codexProxyOwnerKey = requestedOwnerKey;
-    const generation = nextProxyGeneration();
-    codexProxyGeneration = generation;
 
     const server = http.createServer(async (req, res) => {
-      if (!isActiveProxyGeneration(
-        server,
-        codexProxyServer,
-        requestedOwnerKey,
-        codexProxyOwnerKey,
-        generation,
-        codexProxyGeneration,
-      )) {
-        rejectStaleProxyCallback(res, "Codex");
-        return;
-      }
       const url = new URL(req.url, "http://localhost");
 
       if (url.pathname !== "/callback" && url.pathname !== "/auth/callback") {
@@ -379,40 +207,13 @@ export function startCodexProxy(appPort, contributorReservationHash) {
         return;
       }
 
-      if (!isLoopbackOrigin(req.headers.origin)) {
-        res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(renderCodexResultPage(false, "Cross-origin callback rejected"));
-        return;
-      }
-
       const code = url.searchParams.get("code");
       const state = url.searchParams.get("state");
       const errorParam = url.searchParams.get("error");
-      const registeredSession = state ? pendingExchanges.get(state) : null;
-      if (registeredSession && !isSessionBoundToGeneration(
-        registeredSession,
-        requestedOwnerKey,
-        generation,
-      )) {
-        rejectStaleProxyCallback(res, "Codex");
-        return;
-      }
-      const session = registeredSession || null;
-      if (!session && hasMapSessionForGeneration(
-        pendingExchanges,
-        requestedOwnerKey,
-        generation,
-      )) {
-        rejectStaleProxyCallback(res, "Codex");
-        return;
-      }
+      const session = state ? pendingExchanges.get(state) : null;
 
       // Mode A: server-side exchange (session registered)
       if (session) {
-        if (!claimSessionForGeneration(session, requestedOwnerKey, generation)) {
-          rejectStaleProxyCallback(res, "Codex");
-          return;
-        }
         try {
           if (errorParam) {
             throw new Error(url.searchParams.get("error_description") || errorParam);
@@ -421,6 +222,7 @@ export function startCodexProxy(appPort, contributorReservationHash) {
 
           // Lazy import to avoid circular deps
           const { exchangeTokens } = await import("../providers.js");
+          const { createProviderConnection } = await import("@/models");
 
           const tokenData = await exchangeTokens(
             "codex",
@@ -429,17 +231,7 @@ export function startCodexProxy(appPort, contributorReservationHash) {
             session.codeVerifier,
             state
           );
-          if (!isActiveProxyGeneration(
-            server,
-            codexProxyServer,
-            requestedOwnerKey,
-            codexProxyOwnerKey,
-            generation,
-            codexProxyGeneration,
-          ) || !isSessionBoundToGeneration(session, requestedOwnerKey, generation)) {
-            throw staleProxyCallbackError("Codex");
-          }
-          const connection = await persistProxyConnection(session, {
+          const connection = await createProviderConnection({
             provider: "codex",
             authType: "oauth",
             ...tokenData,
@@ -447,19 +239,7 @@ export function startCodexProxy(appPort, contributorReservationHash) {
               ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString()
               : null,
             testStatus: "active",
-          }, () => (
-            pendingExchanges.get(state) === session
-            && session.status === "exchanging"
-            && isActiveProxyGeneration(
-              server,
-              codexProxyServer,
-              requestedOwnerKey,
-              codexProxyOwnerKey,
-              generation,
-              codexProxyGeneration,
-            )
-            && isSessionBoundToGeneration(session, requestedOwnerKey, generation)
-          ));
+          });
 
           session.status = "done";
           session.connectionId = connection.id;
@@ -468,13 +248,12 @@ export function startCodexProxy(appPort, contributorReservationHash) {
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
           res.end(renderCodexResultPage(true, "You can close this window."));
         } catch (err) {
-          writeProxyFailure(session, res, renderCodexResultPage, err);
+          session.status = "error";
+          session.error = err.message;
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(renderCodexResultPage(false, err.message));
         } finally {
-          if (
-            session.contributorReservationHash
-            && (session.status === "done" || session.errorStatus === 409)
-          ) clearCodexSession(state, session);
-          stopCodexProxy(session.contributorReservationHash, generation);
+          stopCodexProxy();
         }
         return;
       }
@@ -483,36 +262,16 @@ export function startCodexProxy(appPort, contributorReservationHash) {
       const redirectUrl = `http://localhost:${appPort}/callback${url.search}`;
       res.writeHead(302, { Location: redirectUrl });
       res.end();
-      stopCodexProxy(contributorReservationHash, generation);
+      stopCodexProxy();
     });
 
     server.listen(CODEX_PORT, "127.0.0.1", () => {
-      if (
-        codexProxyOwnerKey !== requestedOwnerKey
-        || codexProxyGeneration !== generation
-      ) {
-        server.close();
-        resolve({ success: false, reason: "Codex callback proxy start was cancelled" });
-        return;
-      }
       codexProxyServer = server;
-      codexProxyTimeout = setTimeout(
-        () => stopCodexProxy(contributorReservationHash, generation),
-        CODEX_PROXY_TIMEOUT_MS,
-      );
+      codexProxyTimeout = setTimeout(() => stopCodexProxy(), CODEX_PROXY_TIMEOUT_MS);
       resolve({ success: true });
     });
 
     server.on("error", (err) => {
-      if (
-        !codexProxyServer
-        && codexProxyOwnerKey === requestedOwnerKey
-        && codexProxyGeneration === generation
-      ) {
-        clearPendingMapSessionsForGeneration(pendingExchanges, generation);
-        codexProxyOwnerKey = null;
-        codexProxyGeneration = null;
-      }
       if (err.code === "EADDRINUSE") {
         resolve({ success: false, reason: "port_busy" });
       } else {
@@ -525,25 +284,15 @@ export function startCodexProxy(appPort, contributorReservationHash) {
 /**
  * Stop the Codex proxy server and cleanup
  */
-export function stopCodexProxy(contributorReservationHash, expectedGeneration) {
-  if (!canStopProxy(
-    codexProxyOwnerKey,
-    codexProxyGeneration,
-    contributorReservationHash,
-    expectedGeneration,
-  )) return false;
-  const generation = codexProxyGeneration;
+export function stopCodexProxy() {
   if (codexProxyTimeout) {
     clearTimeout(codexProxyTimeout);
     codexProxyTimeout = null;
   }
-  const server = codexProxyServer;
-  codexProxyServer = null;
-  codexProxyOwnerKey = null;
-  codexProxyGeneration = null;
-  if (server) server.close();
-  if (generation != null) clearPendingMapSessionsForGeneration(pendingExchanges, generation);
-  return true;
+  if (codexProxyServer) {
+    codexProxyServer.close();
+    codexProxyServer = null;
+  }
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -554,33 +303,15 @@ export function stopCodexProxy(contributorReservationHash, expectedGeneration) {
 
 let xaiProxyServer = null;
 let xaiProxyTimeout = null;
-let xaiProxyOwnerKey = null;
-let xaiProxyGeneration = null;
 const XAI_PROXY_TIMEOUT_MS = 300000; // 5 minutes
 const XAI_PROXY_PORT = 56121;
 const xaiPendingExchanges = new Map();
 
-export function registerXaiSession({
-  state,
-  codeVerifier,
-  redirectUri,
-  commitProviderConnection,
-  contributorReservationHash,
-}) {
+export function registerXaiSession({ state, codeVerifier, redirectUri }) {
   if (!state || !codeVerifier || !redirectUri) return false;
-  const ownerKey = proxyOwnerKey(contributorReservationHash);
-  if (
-    !xaiProxyServer
-    || !xaiProxyGeneration
-    || xaiProxyOwnerKey !== ownerKey
-  ) return false;
   xaiPendingExchanges.set(state, {
     codeVerifier,
     redirectUri,
-    commitProviderConnection,
-    contributorReservationHash,
-    _proxyOwnerKey: ownerKey,
-    _proxyGeneration: xaiProxyGeneration,
     status: "pending",
     createdAt: Date.now(),
   });
@@ -591,32 +322,8 @@ export function getXaiSessionStatus(state) {
   return xaiPendingExchanges.get(state) || null;
 }
 
-export function claimXaiSession(state, contributorReservationHash) {
-  const session = state ? xaiPendingExchanges.get(state) : null;
-  const ownerKey = proxyOwnerKey(contributorReservationHash);
-  if (
-    !xaiProxyServer
-    || !xaiProxyGeneration
-    || xaiProxyOwnerKey !== ownerKey
-    || !claimSessionForGeneration(session, ownerKey, xaiProxyGeneration)
-  ) return null;
-  return session;
-}
-
-export function isXaiSessionCurrent(state, session, contributorReservationHash) {
-  const ownerKey = proxyOwnerKey(contributorReservationHash);
-  return (
-    xaiPendingExchanges.get(state) === session
-    && session?.status === "exchanging"
-    && xaiProxyServer != null
-    && xaiProxyOwnerKey === ownerKey
-    && isSessionBoundToGeneration(session, ownerKey, xaiProxyGeneration)
-  );
-}
-
-export function clearXaiSession(state, expectedSession = null) {
-  if (expectedSession && xaiPendingExchanges.get(state) !== expectedSession) return false;
-  return xaiPendingExchanges.delete(state);
+export function clearXaiSession(state) {
+  xaiPendingExchanges.delete(state);
 }
 
 function renderXaiResultPage(success, message) {
@@ -628,37 +335,14 @@ function renderXaiResultPage(success, message) {
  * Mode A (server-side): if any session was registered, proxy auto-exchanges + saves DB.
  * Mode B (channel fallback): if no session, proxy 302 redirects to app port.
  */
-export function startXaiProxy(appPort, contributorReservationHash) {
+export function startXaiProxy(appPort) {
   return new Promise((resolve) => {
-    const requestedOwnerKey = proxyOwnerKey(contributorReservationHash);
-    if (xaiProxyOwnerKey) {
-      if (xaiProxyOwnerKey !== requestedOwnerKey) {
-        resolve({ success: false, reason: "xAI callback proxy is already in use" });
-        return;
-      }
-      if (!xaiProxyServer) {
-        resolve({ success: false, reason: "xAI callback proxy is still starting" });
-        return;
-      }
+    if (xaiProxyServer) {
       resolve({ success: true });
       return;
     }
-    xaiProxyOwnerKey = requestedOwnerKey;
-    const generation = nextProxyGeneration();
-    xaiProxyGeneration = generation;
 
     const server = http.createServer(async (req, res) => {
-      if (!isActiveProxyGeneration(
-        server,
-        xaiProxyServer,
-        requestedOwnerKey,
-        xaiProxyOwnerKey,
-        generation,
-        xaiProxyGeneration,
-      )) {
-        rejectStaleProxyCallback(res, "xAI");
-        return;
-      }
       const url = new URL(req.url, "http://localhost");
       if (url.pathname !== "/callback" && url.pathname !== "/auth/callback") {
         res.writeHead(404);
@@ -666,40 +350,13 @@ export function startXaiProxy(appPort, contributorReservationHash) {
         return;
       }
 
-      if (!isLoopbackOrigin(req.headers.origin)) {
-        res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(renderXaiResultPage(false, "Cross-origin callback rejected"));
-        return;
-      }
-
       const code = url.searchParams.get("code");
       const state = url.searchParams.get("state");
       const errorParam = url.searchParams.get("error");
-      const registeredSession = state ? xaiPendingExchanges.get(state) : null;
-      if (registeredSession && !isSessionBoundToGeneration(
-        registeredSession,
-        requestedOwnerKey,
-        generation,
-      )) {
-        rejectStaleProxyCallback(res, "xAI");
-        return;
-      }
-      const session = registeredSession || null;
-      if (!session && hasMapSessionForGeneration(
-        xaiPendingExchanges,
-        requestedOwnerKey,
-        generation,
-      )) {
-        rejectStaleProxyCallback(res, "xAI");
-        return;
-      }
+      const session = state ? xaiPendingExchanges.get(state) : null;
 
       // Mode A: server-side exchange
       if (session) {
-        if (!claimSessionForGeneration(session, requestedOwnerKey, generation)) {
-          rejectStaleProxyCallback(res, "xAI");
-          return;
-        }
         try {
           if (errorParam) {
             throw new Error(url.searchParams.get("error_description") || errorParam);
@@ -707,6 +364,7 @@ export function startXaiProxy(appPort, contributorReservationHash) {
           if (!code) throw new Error("No authorization code received");
 
           const { exchangeTokens } = await import("../providers.js");
+          const { createProviderConnection } = await import("@/models");
 
           const tokenData = await exchangeTokens(
             "xai",
@@ -715,17 +373,7 @@ export function startXaiProxy(appPort, contributorReservationHash) {
             session.codeVerifier,
             state
           );
-          if (!isActiveProxyGeneration(
-            server,
-            xaiProxyServer,
-            requestedOwnerKey,
-            xaiProxyOwnerKey,
-            generation,
-            xaiProxyGeneration,
-          ) || !isSessionBoundToGeneration(session, requestedOwnerKey, generation)) {
-            throw staleProxyCallbackError("xAI");
-          }
-          const connection = await persistProxyConnection(session, {
+          const connection = await createProviderConnection({
             provider: "xai",
             authType: "oauth",
             ...tokenData,
@@ -733,19 +381,7 @@ export function startXaiProxy(appPort, contributorReservationHash) {
               ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString()
               : null,
             testStatus: "active",
-          }, () => (
-            xaiPendingExchanges.get(state) === session
-            && session.status === "exchanging"
-            && isActiveProxyGeneration(
-              server,
-              xaiProxyServer,
-              requestedOwnerKey,
-              xaiProxyOwnerKey,
-              generation,
-              xaiProxyGeneration,
-            )
-            && isSessionBoundToGeneration(session, requestedOwnerKey, generation)
-          ));
+          });
 
           session.status = "done";
           session.connectionId = connection.id;
@@ -754,13 +390,12 @@ export function startXaiProxy(appPort, contributorReservationHash) {
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
           res.end(renderXaiResultPage(true, "You can close this window."));
         } catch (err) {
-          writeProxyFailure(session, res, renderXaiResultPage, err);
+          session.status = "error";
+          session.error = err.message;
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(renderXaiResultPage(false, err.message));
         } finally {
-          if (
-            session.contributorReservationHash
-            && (session.status === "done" || session.errorStatus === 409)
-          ) clearXaiSession(state, session);
-          stopXaiProxy(session.contributorReservationHash, generation);
+          stopXaiProxy();
         }
         return;
       }
@@ -769,36 +404,16 @@ export function startXaiProxy(appPort, contributorReservationHash) {
       const redirectUrl = `http://localhost:${appPort}/callback${url.search}`;
       res.writeHead(302, { Location: redirectUrl });
       res.end();
-      stopXaiProxy(contributorReservationHash, generation);
+      stopXaiProxy();
     });
 
     server.listen(XAI_PROXY_PORT, "127.0.0.1", () => {
-      if (
-        xaiProxyOwnerKey !== requestedOwnerKey
-        || xaiProxyGeneration !== generation
-      ) {
-        server.close();
-        resolve({ success: false, reason: "xAI callback proxy start was cancelled" });
-        return;
-      }
       xaiProxyServer = server;
-      xaiProxyTimeout = setTimeout(
-        () => stopXaiProxy(contributorReservationHash, generation),
-        XAI_PROXY_TIMEOUT_MS,
-      );
+      xaiProxyTimeout = setTimeout(() => stopXaiProxy(), XAI_PROXY_TIMEOUT_MS);
       resolve({ success: true });
     });
 
     server.on("error", (err) => {
-      if (
-        !xaiProxyServer
-        && xaiProxyOwnerKey === requestedOwnerKey
-        && xaiProxyGeneration === generation
-      ) {
-        clearPendingMapSessionsForGeneration(xaiPendingExchanges, generation);
-        xaiProxyOwnerKey = null;
-        xaiProxyGeneration = null;
-      }
       if (err.code === "EADDRINUSE") {
         resolve({ success: false, reason: "port_busy" });
       } else {
@@ -808,25 +423,15 @@ export function startXaiProxy(appPort, contributorReservationHash) {
   });
 }
 
-export function stopXaiProxy(contributorReservationHash, expectedGeneration) {
-  if (!canStopProxy(
-    xaiProxyOwnerKey,
-    xaiProxyGeneration,
-    contributorReservationHash,
-    expectedGeneration,
-  )) return false;
-  const generation = xaiProxyGeneration;
+export function stopXaiProxy() {
   if (xaiProxyTimeout) {
     clearTimeout(xaiProxyTimeout);
     xaiProxyTimeout = null;
   }
-  const server = xaiProxyServer;
-  xaiProxyServer = null;
-  xaiProxyOwnerKey = null;
-  xaiProxyGeneration = null;
-  if (server) server.close();
-  if (generation != null) clearPendingMapSessionsForGeneration(xaiPendingExchanges, generation);
-  return true;
+  if (xaiProxyServer) {
+    xaiProxyServer.close();
+    xaiProxyServer = null;
+  }
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -838,26 +443,10 @@ let traeProxyServer = null;
 let traeProxyTimeout = null;
 let traeProxyPort = null;
 let traeSession = null;
-let traeProxyOwnerKey = null;
-let traeProxyGeneration = null;
 
-export function registerTraeSession({ state, commitProviderConnection, contributorReservationHash }) {
+export function registerTraeSession({ state }) {
   if (!state) return false;
-  const ownerKey = proxyOwnerKey(contributorReservationHash);
-  if (
-    !traeProxyServer
-    || !traeProxyGeneration
-    || traeProxyOwnerKey !== ownerKey
-  ) return false;
-  traeSession = {
-    state,
-    commitProviderConnection,
-    contributorReservationHash,
-    _proxyOwnerKey: ownerKey,
-    _proxyGeneration: traeProxyGeneration,
-    status: "pending",
-    createdAt: Date.now(),
-  };
+  traeSession = { state, status: "pending", createdAt: Date.now() };
   return true;
 }
 export function getTraeSessionStatus(state) {
@@ -865,45 +454,17 @@ export function getTraeSessionStatus(state) {
   if (state && traeSession.state !== state) return null;
   return traeSession;
 }
-export function clearTraeSession(state, expectedSession = null) {
-  if (expectedSession && traeSession !== expectedSession) return false;
-  if (!state || (traeSession && traeSession.state === state)) {
-    traeSession = null;
-    return true;
-  }
-  return false;
+export function clearTraeSession(state) {
+  if (!state || (traeSession && traeSession.state === state)) traeSession = null;
 }
 
-export function startTraeProxy(contributorReservationHash) {
+export function startTraeProxy() {
   return new Promise((resolve) => {
-    const requestedOwnerKey = proxyOwnerKey(contributorReservationHash);
-    if (traeProxyOwnerKey) {
-      if (traeProxyOwnerKey !== requestedOwnerKey) {
-        resolve({ success: false, reason: "Trae callback proxy is already in use" });
-        return;
-      }
-      if (!traeProxyServer) {
-        resolve({ success: false, reason: "Trae callback proxy is still starting" });
-        return;
-      }
+    if (traeProxyServer) {
       resolve({ success: true, port: traeProxyPort, callbackUrl: `http://127.0.0.1:${traeProxyPort}${TRAE_CONFIG.callbackPath}` });
       return;
     }
-    traeProxyOwnerKey = requestedOwnerKey;
-    const generation = nextProxyGeneration();
-    traeProxyGeneration = generation;
     const server = http.createServer(async (req, res) => {
-      if (!isActiveProxyGeneration(
-        server,
-        traeProxyServer,
-        requestedOwnerKey,
-        traeProxyOwnerKey,
-        generation,
-        traeProxyGeneration,
-      )) {
-        rejectStaleProxyCallback(res, "Trae");
-        return;
-      }
       const url = new URL(req.url, "http://localhost");
       if (url.pathname !== TRAE_CONFIG.callbackPath && url.pathname !== "/auth/callback") {
         res.writeHead(404);
@@ -911,7 +472,7 @@ export function startTraeProxy(contributorReservationHash) {
         return;
       }
       const session = traeSession;
-      if (!session || !isSessionBoundToGeneration(session, requestedOwnerKey, generation)) {
+      if (!session) {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderCodexResultPage(false, "No active Trae login session"));
         return;
@@ -923,35 +484,22 @@ export function startTraeProxy(contributorReservationHash) {
         res.end(renderCodexResultPage(false, "Cross-origin callback rejected"));
         return;
       }
-      if (session.status !== "pending") {
-        rejectStaleProxyCallback(res, "Trae");
-        return;
-      }
       const cbState = url.searchParams.get("state");
       if (cbState && session.state && cbState !== session.state) {
-        rejectStaleProxyCallback(res, "Trae");
-        return;
-      }
-      if (!claimSessionForGeneration(session, requestedOwnerKey, generation)) {
-        rejectStaleProxyCallback(res, "Trae");
+        session.status = "error";
+        session.error = "Trae callback state mismatch";
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderCodexResultPage(false, session.error));
+        stopTraeProxy();
         return;
       }
       // Pass the raw callback query to exchangeTokens → parseTraeCallback
       const rawCallback = `${url.pathname}?${url.searchParams.toString()}`;
       try {
         const { exchangeTokens } = await import("../providers.js");
+        const { createProviderConnection } = await import("@/models");
         const tokenData = await exchangeTokens("trae", rawCallback);
-        if (!isActiveProxyGeneration(
-          server,
-          traeProxyServer,
-          requestedOwnerKey,
-          traeProxyOwnerKey,
-          generation,
-          traeProxyGeneration,
-        ) || !isSessionBoundToGeneration(session, requestedOwnerKey, generation)) {
-          throw staleProxyCallbackError("Trae");
-        }
-        const connection = await persistProxyConnection(session, {
+        const connection = await createProviderConnection({
           provider: "trae",
           authType: "oauth",
           ...tokenData,
@@ -959,83 +507,35 @@ export function startTraeProxy(contributorReservationHash) {
             ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString()
             : null,
           testStatus: "active",
-        }, () => (
-          traeSession === session
-          && session.status === "exchanging"
-          && isActiveProxyGeneration(
-            server,
-            traeProxyServer,
-            requestedOwnerKey,
-            traeProxyOwnerKey,
-            generation,
-            traeProxyGeneration,
-          )
-          && isSessionBoundToGeneration(session, requestedOwnerKey, generation)
-        ));
+        });
         session.status = "done";
         session.connectionId = connection.id;
         session.email = connection.email;
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderCodexResultPage(true, "You can close this window."));
       } catch (err) {
-        writeProxyFailure(session, res, renderCodexResultPage, err);
+        session.status = "error";
+        session.error = err.message;
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderCodexResultPage(false, err.message));
       } finally {
-        if (
-          session.contributorReservationHash
-          && (session.status === "done" || session.errorStatus === 409)
-        ) clearTraeSession(session.state, session);
-        stopTraeProxy(session.contributorReservationHash, generation);
+        stopTraeProxy();
       }
     });
     server.listen(0, "127.0.0.1", () => {
-      if (
-        traeProxyOwnerKey !== requestedOwnerKey
-        || traeProxyGeneration !== generation
-      ) {
-        server.close();
-        resolve({ success: false, reason: "Trae callback proxy start was cancelled" });
-        return;
-      }
       traeProxyServer = server;
       traeProxyPort = server.address().port;
-      traeProxyTimeout = setTimeout(
-        () => stopTraeProxy(contributorReservationHash, generation),
-        TRAE_CONFIG.oauthTimeoutMs,
-      );
+      traeProxyTimeout = setTimeout(() => stopTraeProxy(), TRAE_CONFIG.oauthTimeoutMs);
       resolve({ success: true, port: traeProxyPort, callbackUrl: `http://127.0.0.1:${traeProxyPort}${TRAE_CONFIG.callbackPath}` });
     });
-    server.on("error", (err) => {
-      if (
-        !traeProxyServer
-        && traeProxyOwnerKey === requestedOwnerKey
-        && traeProxyGeneration === generation
-      ) {
-        traeSession = clearPendingSingletonSessionForGeneration(traeSession, generation);
-        traeProxyOwnerKey = null;
-        traeProxyGeneration = null;
-      }
-      resolve({ success: false, reason: err.message });
-    });
+    server.on("error", (err) => resolve({ success: false, reason: err.message }));
   });
 }
 
-export function stopTraeProxy(contributorReservationHash, expectedGeneration) {
-  if (!canStopProxy(
-    traeProxyOwnerKey,
-    traeProxyGeneration,
-    contributorReservationHash,
-    expectedGeneration,
-  )) return false;
-  const generation = traeProxyGeneration;
+export function stopTraeProxy() {
   if (traeProxyTimeout) { clearTimeout(traeProxyTimeout); traeProxyTimeout = null; }
-  const server = traeProxyServer;
-  traeProxyServer = null;
+  if (traeProxyServer) { traeProxyServer.close(); traeProxyServer = null; }
   traeProxyPort = null;
-  traeProxyOwnerKey = null;
-  traeProxyGeneration = null;
-  if (server) server.close();
-  traeSession = clearPendingSingletonSessionForGeneration(traeSession, generation);
-  return true;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1047,26 +547,10 @@ let windsurfProxyServer = null;
 let windsurfProxyTimeout = null;
 let windsurfProxyPort = null;
 let windsurfSession = null;
-let windsurfProxyOwnerKey = null;
-let windsurfProxyGeneration = null;
 
-export function registerWindsurfSession({ state, commitProviderConnection, contributorReservationHash }) {
+export function registerWindsurfSession({ state }) {
   if (!state) return false;
-  const ownerKey = proxyOwnerKey(contributorReservationHash);
-  if (
-    !windsurfProxyServer
-    || !windsurfProxyGeneration
-    || windsurfProxyOwnerKey !== ownerKey
-  ) return false;
-  windsurfSession = {
-    state,
-    commitProviderConnection,
-    contributorReservationHash,
-    _proxyOwnerKey: ownerKey,
-    _proxyGeneration: windsurfProxyGeneration,
-    status: "pending",
-    createdAt: Date.now(),
-  };
+  windsurfSession = { state, status: "pending", createdAt: Date.now() };
   return true;
 }
 export function getWindsurfSessionStatus(state) {
@@ -1074,45 +558,17 @@ export function getWindsurfSessionStatus(state) {
   if (state && windsurfSession.state !== state) return null;
   return windsurfSession;
 }
-export function clearWindsurfSession(state, expectedSession = null) {
-  if (expectedSession && windsurfSession !== expectedSession) return false;
-  if (!state || (windsurfSession && windsurfSession.state === state)) {
-    windsurfSession = null;
-    return true;
-  }
-  return false;
+export function clearWindsurfSession(state) {
+  if (!state || (windsurfSession && windsurfSession.state === state)) windsurfSession = null;
 }
 
-export function startWindsurfProxy(contributorReservationHash) {
+export function startWindsurfProxy() {
   return new Promise((resolve) => {
-    const requestedOwnerKey = proxyOwnerKey(contributorReservationHash);
-    if (windsurfProxyOwnerKey) {
-      if (windsurfProxyOwnerKey !== requestedOwnerKey) {
-        resolve({ success: false, reason: "Windsurf callback proxy is already in use" });
-        return;
-      }
-      if (!windsurfProxyServer) {
-        resolve({ success: false, reason: "Windsurf callback proxy is still starting" });
-        return;
-      }
+    if (windsurfProxyServer) {
       resolve({ success: true, port: windsurfProxyPort, callbackUrl: `http://127.0.0.1:${windsurfProxyPort}${WINDSURF_CONFIG.callbackPath}` });
       return;
     }
-    windsurfProxyOwnerKey = requestedOwnerKey;
-    const generation = nextProxyGeneration();
-    windsurfProxyGeneration = generation;
     const server = http.createServer(async (req, res) => {
-      if (!isActiveProxyGeneration(
-        server,
-        windsurfProxyServer,
-        requestedOwnerKey,
-        windsurfProxyOwnerKey,
-        generation,
-        windsurfProxyGeneration,
-      )) {
-        rejectStaleProxyCallback(res, "Windsurf");
-        return;
-      }
       const url = new URL(req.url, "http://localhost");
       if (url.pathname !== WINDSURF_CONFIG.callbackPath) {
         res.writeHead(404);
@@ -1120,7 +576,7 @@ export function startWindsurfProxy(contributorReservationHash) {
         return;
       }
       const session = windsurfSession;
-      if (!session || !isSessionBoundToGeneration(session, requestedOwnerKey, generation)) {
+      if (!session) {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderCodexResultPage(false, "No active Windsurf login session"));
         return;
@@ -1131,115 +587,54 @@ export function startWindsurfProxy(contributorReservationHash) {
         res.end(renderCodexResultPage(false, "Cross-origin callback rejected"));
         return;
       }
-      if (session.status !== "pending") {
-        rejectStaleProxyCallback(res, "Windsurf");
-        return;
-      }
       const cbState = url.searchParams.get("state");
       if (!cbState || !session.state || cbState !== session.state) {
-        rejectStaleProxyCallback(res, "Windsurf");
-        return;
-      }
-      if (!claimSessionForGeneration(session, requestedOwnerKey, generation)) {
-        rejectStaleProxyCallback(res, "Windsurf");
+        session.status = "error";
+        session.error = "Windsurf callback state mismatch";
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderCodexResultPage(false, session.error));
+        stopWindsurfProxy();
         return;
       }
       const rawCallback = `${url.pathname}?${url.searchParams.toString()}`;
       try {
         const { exchangeTokens } = await import("../providers.js");
+        const { createProviderConnection } = await import("@/models");
         const tokenData = await exchangeTokens("windsurf", rawCallback, null, null, session.state);
-        if (!isActiveProxyGeneration(
-          server,
-          windsurfProxyServer,
-          requestedOwnerKey,
-          windsurfProxyOwnerKey,
-          generation,
-          windsurfProxyGeneration,
-        ) || !isSessionBoundToGeneration(session, requestedOwnerKey, generation)) {
-          throw staleProxyCallbackError("Windsurf");
-        }
-        const connection = await persistProxyConnection(session, {
+        const connection = await createProviderConnection({
           provider: "windsurf",
           authType: "api_key",
           ...tokenData,
           testStatus: "active",
-        }, () => (
-          windsurfSession === session
-          && session.status === "exchanging"
-          && isActiveProxyGeneration(
-            server,
-            windsurfProxyServer,
-            requestedOwnerKey,
-            windsurfProxyOwnerKey,
-            generation,
-            windsurfProxyGeneration,
-          )
-          && isSessionBoundToGeneration(session, requestedOwnerKey, generation)
-        ));
+        });
         session.status = "done";
         session.connectionId = connection.id;
         session.email = connection.email;
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderCodexResultPage(true, "You can close this window."));
       } catch (err) {
-        writeProxyFailure(session, res, renderCodexResultPage, err);
+        session.status = "error";
+        session.error = err.message;
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderCodexResultPage(false, err.message));
       } finally {
-        if (
-          session.contributorReservationHash
-          && (session.status === "done" || session.errorStatus === 409)
-        ) clearWindsurfSession(session.state, session);
-        stopWindsurfProxy(session.contributorReservationHash, generation);
+        stopWindsurfProxy();
       }
     });
     server.listen(0, "127.0.0.1", () => {
-      if (
-        windsurfProxyOwnerKey !== requestedOwnerKey
-        || windsurfProxyGeneration !== generation
-      ) {
-        server.close();
-        resolve({ success: false, reason: "Windsurf callback proxy start was cancelled" });
-        return;
-      }
       windsurfProxyServer = server;
       windsurfProxyPort = server.address().port;
-      windsurfProxyTimeout = setTimeout(
-        () => stopWindsurfProxy(contributorReservationHash, generation),
-        WINDSURF_CONFIG.oauthTimeoutMs,
-      );
+      windsurfProxyTimeout = setTimeout(() => stopWindsurfProxy(), WINDSURF_CONFIG.oauthTimeoutMs);
       resolve({ success: true, port: windsurfProxyPort, callbackUrl: `http://127.0.0.1:${windsurfProxyPort}${WINDSURF_CONFIG.callbackPath}` });
     });
-    server.on("error", (err) => {
-      if (
-        !windsurfProxyServer
-        && windsurfProxyOwnerKey === requestedOwnerKey
-        && windsurfProxyGeneration === generation
-      ) {
-        windsurfSession = clearPendingSingletonSessionForGeneration(windsurfSession, generation);
-        windsurfProxyOwnerKey = null;
-        windsurfProxyGeneration = null;
-      }
-      resolve({ success: false, reason: err.message });
-    });
+    server.on("error", (err) => resolve({ success: false, reason: err.message }));
   });
 }
 
-export function stopWindsurfProxy(contributorReservationHash, expectedGeneration) {
-  if (!canStopProxy(
-    windsurfProxyOwnerKey,
-    windsurfProxyGeneration,
-    contributorReservationHash,
-    expectedGeneration,
-  )) return false;
-  const generation = windsurfProxyGeneration;
+export function stopWindsurfProxy() {
   if (windsurfProxyTimeout) { clearTimeout(windsurfProxyTimeout); windsurfProxyTimeout = null; }
-  const server = windsurfProxyServer;
-  windsurfProxyServer = null;
+  if (windsurfProxyServer) { windsurfProxyServer.close(); windsurfProxyServer = null; }
   windsurfProxyPort = null;
-  windsurfProxyOwnerKey = null;
-  windsurfProxyGeneration = null;
-  if (server) server.close();
-  windsurfSession = clearPendingSingletonSessionForGeneration(windsurfSession, generation);
-  return true;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1252,33 +647,13 @@ let zedProxyServer = null;
 let zedProxyTimeout = null;
 let zedProxyPort = null;
 let zedSession = null;
-let zedProxyOwnerKey = null;
-let zedProxyGeneration = null;
 
-export function registerZedSession({
-  state,
-  codeVerifier,
-  systemId,
-  commitProviderConnection,
-  contributorReservationHash,
-}) {
+export function registerZedSession({ state, codeVerifier, systemId }) {
   if (!state || !codeVerifier) return false;
-  const ownerKey = proxyOwnerKey(contributorReservationHash);
-  if (contributorReservationHash && (
-    !zedProxyServer
-    || !zedProxyGeneration
-    || zedProxyOwnerKey !== ownerKey
-  )) return false;
   zedSession = {
     state,
     codeVerifier,
     systemId: systemId || null,
-    commitProviderConnection,
-    contributorReservationHash,
-    // Preserve upstream's direct-register helper contract for normal flows.
-    // Contributor sessions stay bound to the already-reserved proxy generation.
-    _proxyOwnerKey: zedProxyGeneration ? ownerKey : null,
-    _proxyGeneration: zedProxyGeneration,
     status: "pending",
     createdAt: Date.now(),
   };
@@ -1289,63 +664,35 @@ export function getZedSessionStatus(state) {
   if (state && zedSession.state !== state) return null;
   return zedSession;
 }
-export function clearZedSession(state, expectedSession = null) {
-  if (expectedSession && zedSession !== expectedSession) return false;
-  if (!state || (zedSession && zedSession.state === state)) {
-    zedSession = null;
-    return true;
-  }
-  return false;
+export function clearZedSession(state) {
+  if (!state || (zedSession && zedSession.state === state)) zedSession = null;
 }
 
-export function startZedProxy(preferredPort = 0, contributorReservationHash) {
+export function startZedProxy(preferredPort = 0) {
   return new Promise((resolve) => {
-    const requestedOwnerKey = proxyOwnerKey(contributorReservationHash);
-    if (zedProxyOwnerKey) {
-      if (zedProxyOwnerKey !== requestedOwnerKey) {
-        resolve({ success: false, reason: "Zed callback proxy is already in use" });
-        return;
-      }
-      if (!zedProxyServer) {
-        resolve({ success: false, reason: "Zed callback proxy is still starting" });
-        return;
-      }
+    if (zedProxyServer) {
       // Reuse the live listener, but renew its idle timeout so a previous
       // flow's deadline can never kill the flow that just adopted the port.
       if (zedProxyTimeout) clearTimeout(zedProxyTimeout);
-      zedProxyTimeout = setTimeout(() => {
-        console.log("[Zed proxy] timeout, stopping");
-        stopZedProxy(contributorReservationHash, zedProxyGeneration);
-      }, ZED_HOSTED_CONFIG.oauthTimeoutMs);
+      zedProxyTimeout = setTimeout(() => { console.log("[Zed proxy] timeout, stopping"); stopZedProxy(); }, ZED_HOSTED_CONFIG.oauthTimeoutMs);
       resolve({ success: true, port: zedProxyPort, callbackUrl: `http://127.0.0.1:${zedProxyPort}/` });
       return;
     }
-    zedProxyOwnerKey = requestedOwnerKey;
-    const generation = nextProxyGeneration();
-    zedProxyGeneration = generation;
     const server = http.createServer(async (req, res) => {
-      if (!isActiveProxyGeneration(
-        server,
-        zedProxyServer,
-        requestedOwnerKey,
-        zedProxyOwnerKey,
-        generation,
-        zedProxyGeneration,
-      )) {
-        rejectStaleProxyCallback(res, "Zed");
-        return;
-      }
       const url = new URL(req.url, "http://localhost");
+      // Log path + redacted params (access_token is the RSA-encrypted credential).
+      const redacted = Object.fromEntries(url.searchParams);
+      for (const k of ["access_token", "user_id", "code_verifier", "state"]) {
+        if (redacted[k]) redacted[k] = "<redacted>";
+      }
+      console.log("[Zed proxy]", req.method, url.pathname, JSON.stringify(redacted));
       if (url.pathname !== "/" && url.pathname !== "/callback") {
         res.writeHead(404);
         res.end("Not found");
         return;
       }
-      // Callback paths and query values are attacker/provider controlled and
-      // may carry encrypted credentials or error text that echoes them.
-      console.log("[Zed proxy] callback received");
       const session = zedSession;
-      if (!session || !isSessionBoundToGeneration(session, requestedOwnerKey, generation)) {
+      if (!session) {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderCodexResultPage(false, "No active Zed login session"));
         return;
@@ -1359,7 +706,7 @@ export function startZedProxy(preferredPort = 0, contributorReservationHash) {
       }
       // A genuine Zed redirect always carries user_id + access_token. Anything
       // else (probe, prefetch, stray navigation, favicon-style miss) is NOT
-      // the callback: answer without claiming the session and WITHOUT
+      // the callback: answer without touching the session and WITHOUT
       // stopping the server, so the real redirect can still land afterwards.
       const qp = url.searchParams;
       const hasZedParams =
@@ -1371,15 +718,12 @@ export function startZedProxy(preferredPort = 0, contributorReservationHash) {
         res.end(renderCodexResultPage(false, "Waiting for Zed sign-in — this request carried no login data."));
         return;
       }
-      if (!claimSessionForGeneration(session, requestedOwnerKey, generation)) {
-        rejectStaleProxyCallback(res, "Zed");
-        return;
-      }
       // Pass raw callback path+query to exchangeTokens → parseZedCallbackPayload.
       // codeVerifier carries the encoded RSA private key for decryption.
       const rawCallback = url.search ? `${url.pathname}?${url.searchParams.toString()}` : url.pathname;
       try {
         const { exchangeTokens } = await import("../providers.js");
+        const { createProviderConnection } = await import("@/models");
         const tokenData = await exchangeTokens(
           "zed",
           rawCallback,
@@ -1388,52 +732,27 @@ export function startZedProxy(preferredPort = 0, contributorReservationHash) {
           session.state,
           session.systemId ? { systemId: session.systemId } : undefined,
         );
-        if (!isActiveProxyGeneration(
-          server,
-          zedProxyServer,
-          requestedOwnerKey,
-          zedProxyOwnerKey,
-          generation,
-          zedProxyGeneration,
-        ) || !isSessionBoundToGeneration(session, requestedOwnerKey, generation)) {
-          throw staleProxyCallbackError("Zed");
-        }
-        const connection = await persistProxyConnection(session, {
+        const connection = await createProviderConnection({
           provider: "zed",
           authType: "oauth",
           ...tokenData,
           testStatus: "active",
-        }, () => (
-          zedSession === session
-          && session.status === "exchanging"
-          && isActiveProxyGeneration(
-            server,
-            zedProxyServer,
-            requestedOwnerKey,
-            zedProxyOwnerKey,
-            generation,
-            zedProxyGeneration,
-          )
-          && isSessionBoundToGeneration(session, requestedOwnerKey, generation)
-        ));
+        });
         session.status = "done";
         session.connectionId = connection.id;
         session.email = connection.email;
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderCodexResultPage(true, "You can close this window."));
+        stopZedProxy();
       } catch (err) {
-        writeProxyFailure(session, res, renderCodexResultPage, err);
-      } finally {
-        if (
-          session.contributorReservationHash
-          && (session.status === "done" || session.errorStatus === 409)
-        ) clearZedSession(session.state, session);
-        // Upstream keeps a normal Zed listener alive after a failed decrypt:
-        // a superseded popup must not break the live attempt. Contributor
-        // attempts still release their reserved proxy when complete or stale.
-        if (session.contributorReservationHash || session.status === "done") {
-          stopZedProxy(session.contributorReservationHash, generation);
-        }
+        session.status = "error";
+        session.error = err.message;
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderCodexResultPage(false, err.message));
+        // Intentionally NOT stopping here: the failure may belong to a
+        // superseded attempt (e.g. an older popup landing after "Try Again"
+        // registered a new keypair). The live attempt's genuine callback must
+        // still land. The idle timeout + modal close bound the listener.
       }
     });
     const tryPort = Number(preferredPort) || 0;
@@ -1442,76 +761,32 @@ export function startZedProxy(preferredPort = 0, contributorReservationHash) {
       if (err.code === "EADDRINUSE" && tryPort !== 0) {
         console.log(`[Zed proxy] port ${tryPort} busy, falling back to random`);
         server.listen(0, "127.0.0.1", () => {
-          if (
-            zedProxyOwnerKey !== requestedOwnerKey
-            || zedProxyGeneration !== generation
-          ) {
-            server.close();
-            resolve({ success: false, reason: "Zed callback proxy start was cancelled" });
-            return;
-          }
           zedProxyServer = server;
           zedProxyPort = server.address().port;
-          zedProxyTimeout = setTimeout(
-            () => stopZedProxy(contributorReservationHash, generation),
-            ZED_HOSTED_CONFIG.oauthTimeoutMs,
-          );
+          zedProxyTimeout = setTimeout(() => stopZedProxy(), ZED_HOSTED_CONFIG.oauthTimeoutMs);
           console.log(`[Zed proxy] listening on random port ${zedProxyPort}`);
           resolve({ success: true, port: zedProxyPort, callbackUrl: `http://127.0.0.1:${zedProxyPort}/` });
         });
       } else {
         console.log(`[Zed proxy] listen error: ${err.message}`);
-        if (
-          !zedProxyServer
-          && zedProxyOwnerKey === requestedOwnerKey
-          && zedProxyGeneration === generation
-        ) {
-          zedSession = clearPendingSingletonSessionForGeneration(zedSession, generation);
-          zedProxyOwnerKey = null;
-          zedProxyGeneration = null;
-        }
         resolve({ success: false, reason: err.message });
       }
     });
     server.listen(tryPort, "127.0.0.1", () => {
-      if (
-        zedProxyOwnerKey !== requestedOwnerKey
-        || zedProxyGeneration !== generation
-      ) {
-        server.close();
-        resolve({ success: false, reason: "Zed callback proxy start was cancelled" });
-        return;
-      }
       zedProxyServer = server;
       zedProxyPort = server.address().port;
-      zedProxyTimeout = setTimeout(() => {
-        console.log("[Zed proxy] timeout, stopping");
-        stopZedProxy(contributorReservationHash, generation);
-      }, ZED_HOSTED_CONFIG.oauthTimeoutMs);
+      zedProxyTimeout = setTimeout(() => { console.log("[Zed proxy] timeout, stopping"); stopZedProxy(); }, ZED_HOSTED_CONFIG.oauthTimeoutMs);
       console.log(`[Zed proxy] listening on port ${zedProxyPort}`);
       resolve({ success: true, port: zedProxyPort, callbackUrl: `http://127.0.0.1:${zedProxyPort}/` });
     });
   });
 }
 
-export function stopZedProxy(contributorReservationHash, expectedGeneration) {
-  if (!canStopProxy(
-    zedProxyOwnerKey,
-    zedProxyGeneration,
-    contributorReservationHash,
-    expectedGeneration,
-  )) return false;
-  const generation = zedProxyGeneration;
+export function stopZedProxy() {
   console.log(`[Zed proxy] stopping (port ${zedProxyPort || "-"})`);
   if (zedProxyTimeout) { clearTimeout(zedProxyTimeout); zedProxyTimeout = null; }
-  const server = zedProxyServer;
-  zedProxyServer = null;
+  if (zedProxyServer) { zedProxyServer.close(); zedProxyServer = null; }
   zedProxyPort = null;
-  zedProxyOwnerKey = null;
-  zedProxyGeneration = null;
-  if (server) server.close();
-  zedSession = clearPendingSingletonSessionForGeneration(zedSession, generation);
-  return true;
 }
 
 // ───────────────────────────────────────────────────────────────────────────

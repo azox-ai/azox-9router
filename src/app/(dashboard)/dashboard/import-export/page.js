@@ -343,7 +343,7 @@ export default function ImportExportPage() {
               <span className="material-symbols-outlined text-[19px] text-blue-500">info</span>
               <div className="space-y-1">
                 <p className="font-medium text-text-main">Combo-only transfer</p>
-                <p>Exports name, type, ordered models, fallback strategy and Fusion judge model.</p>
+                <p>Exports name, type, ordered models, strategy, Fusion tuning and Smart routing metadata.</p>
                 <p>Provider connections, OAuth tokens, API keys and other settings are never included or changed.</p>
                 <p>Imports match existing combos by name. Export a backup first before choosing Update existing.</p>
               </div>
