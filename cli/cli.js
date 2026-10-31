@@ -80,10 +80,11 @@ if (args[0] === "xai" && args[1] === "video") {
   return;
 }
 
-// `9router connect <url>` configures local CLI tools against a remote server —
-// no local server, no runtime deps. Usable via `npx 9router connect …`.
-if (args[0] === "connect") {
-  const { run } = require("./src/cli/commands/connect");
+// `9router connect <url>` configures local CLI tools against a remote server, and
+// `9router show` prints what they're currently set to — no local server, no
+// runtime deps. Usable via `npx 9router …`.
+if (args[0] === "connect" || args[0] === "show") {
+  const { run } = require(args[0] === "show" ? "./src/cli/commands/show" : "./src/cli/commands/connect");
   run(args.slice(1))
     .then((code) => process.exit(code))
     .catch((err) => {
@@ -169,6 +170,8 @@ Options:
 Commands:
   connect <server-url> Configure Claude Code for a remote 9router server
                       (npx 9router connect http://host:20128 — no install needed)
+  show [tool…]        Show each CLI tool's current 9router config and models
+                      (e.g. 9router show claude)
   xai video --prompt "..." --output video.mp4
                       Generate a Grok Imagine video via the running gateway
                       (see: ${APP_NAME} xai video --help)
@@ -189,10 +192,10 @@ if (skipUpdate && !trayMode && !process.stdin.isTTY) {
 // Always use Node.js runtime with absolute path
 const RUNTIME = process.execPath;
 
-// Compare semver versions: returns 1 if a > b, -1 if a < b, 0 if equal
+// Compare upstream release cores; an AZOX suffix must not hide patch updates.
 function compareVersions(a, b) {
-  const partsA = a.split(".").map(Number);
-  const partsB = b.split(".").map(Number);
+  const partsA = a.split("-")[0].split(".").map(Number);
+  const partsB = b.split("-")[0].split(".").map(Number);
   for (let i = 0; i < 3; i++) {
     if (partsA[i] > partsB[i]) return 1;
     if (partsA[i] < partsB[i]) return -1;

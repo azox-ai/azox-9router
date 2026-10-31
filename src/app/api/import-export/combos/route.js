@@ -11,7 +11,7 @@ const MAX_ITEMS = 500;
 const MAX_MODELS_PER_COMBO = 200;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
-const VALID_STRATEGIES = new Set(["fallback", "round-robin", "fusion"]);
+const VALID_STRATEGIES = new Set(["fallback", "round-robin", "fusion", "smart"]);
 const FUSION_TUNING_FIELDS = ["minPanel", "stragglerGraceMs", "panelHardTimeoutMs"];
 
 function normalizeFusionTuning(raw) {
@@ -41,35 +41,43 @@ function isRecord(value) {
 }
 
 function exportStrategy(raw) {
-  const fallbackStrategy = VALID_STRATEGIES.has(raw?.fallbackStrategy)
-    ? raw.fallbackStrategy
-    : "fallback";
-  const result = { fallbackStrategy };
-  if (fallbackStrategy === "fusion" && typeof raw?.judgeModel === "string" && raw.judgeModel.trim()) {
-    result.judgeModel = raw.judgeModel.trim();
+  const source = isRecord(raw) ? raw : {};
+  if (source.fallbackStrategy === undefined || VALID_STRATEGIES.has(source.fallbackStrategy)) {
+    return normalizeStrategy(source);
   }
-  if (fallbackStrategy === "fusion" && isRecord(raw?.fusionTuning)) {
-    result.fusionTuning = normalizeFusionTuning(raw.fusionTuning);
-  }
-  return result;
+  return normalizeStrategy({ ...source, fallbackStrategy: "fallback" });
 }
 
 function normalizeStrategy(raw) {
   if (!isRecord(raw)) throw new Error("Combo settings must be an object");
-  const fallbackStrategy = raw.fallbackStrategy || "fallback";
-  if (!VALID_STRATEGIES.has(fallbackStrategy)) {
-    throw new Error(`Unsupported strategy: ${fallbackStrategy}`);
-  }
   const result = {};
-  if (fallbackStrategy !== "fallback") result.fallbackStrategy = fallbackStrategy;
-  if (fallbackStrategy === "fusion" && raw.judgeModel !== undefined) {
-    if (typeof raw.judgeModel !== "string" || raw.judgeModel.length > 500) {
-      throw new Error("Judge model must be a string of 500 characters or fewer");
-    }
-    if (raw.judgeModel.trim()) result.judgeModel = raw.judgeModel.trim();
+  if (raw.fallbackStrategy !== undefined) {
+    if (!VALID_STRATEGIES.has(raw.fallbackStrategy)) throw new Error("Unsupported combo strategy");
+    result.fallbackStrategy = raw.fallbackStrategy;
   }
-  if (fallbackStrategy === "fusion" && raw.fusionTuning !== undefined) {
-    result.fusionTuning = normalizeFusionTuning(raw.fusionTuning);
+  // Preserve inactive routing metadata too: changing strategy in the dashboard
+  // does not discard its saved Smart or Fusion configuration.
+  for (const key of ["judgeModel", "routerModel"]) {
+    if (raw[key] === undefined) continue;
+    if (typeof raw[key] !== "string" || raw[key].length > 500) {
+      throw new Error("Routing model must be a string of 500 characters or fewer");
+    }
+    result[key] = raw[key];
+  }
+  if (raw.fusionTuning !== undefined) result.fusionTuning = normalizeFusionTuning(raw.fusionTuning);
+  if (raw.smartPolicy !== undefined) {
+    if (typeof raw.smartPolicy !== "string") throw new Error("Smart policy must be a string");
+    result.smartPolicy = raw.smartPolicy;
+  }
+  if (raw.sessionSticky !== undefined) {
+    if (typeof raw.sessionSticky !== "boolean") throw new Error("Session sticky must be a boolean");
+    result.sessionSticky = raw.sessionSticky;
+  }
+  if (raw.confidenceThreshold !== undefined) {
+    if (typeof raw.confidenceThreshold !== "number" || !Number.isFinite(raw.confidenceThreshold)) {
+      throw new Error("Confidence threshold must be a finite number");
+    }
+    result.confidenceThreshold = raw.confidenceThreshold;
   }
   return result;
 }
@@ -157,7 +165,7 @@ export async function GET() {
       headers: { "Cache-Control": "no-store" },
     });
   } catch (error) {
-    console.error("[ImportExport][Combos] Export failed:", error);
+    console.error("[ImportExport][Combos] Export failed");
     return NextResponse.json({ error: "Failed to export combos" }, { status: 500 });
   }
 }
@@ -227,10 +235,11 @@ export async function POST(request) {
       results: results.map(({ index, ...result }) => result),
     });
   } catch (error) {
-    console.error("[ImportExport][Combos] Import failed:", error);
+    const bodyError = error instanceof RequestBodyError;
+    if (!bodyError) console.error("[ImportExport][Combos] Import failed");
     return NextResponse.json(
-      { error: error?.message || "Failed to import combos" },
-      { status: error instanceof RequestBodyError ? error.status : 400 },
+      { error: bodyError ? error.message : "Failed to import combos" },
+      { status: bodyError ? error.status : 400 },
     );
   }
 }

@@ -11,7 +11,6 @@ import ThemeToggle from "@/shared/components/ThemeToggle";
 import DonateModal from "@/shared/components/DonateModal";
 import { useHeaderSearchStore } from "@/store/headerSearchStore";
 import { OAUTH_PROVIDERS, APIKEY_PROVIDERS } from "@/shared/constants/config";
-import { getCustomPageInfo } from "@/shared/constants/customNavigation";
 import { MEDIA_PROVIDER_KINDS, AI_PROVIDERS } from "@/shared/constants/providers";
 import { getProviderIconSrc } from "@/shared/utils/providerIcon";
 import { translate } from "@/i18n/runtime";
@@ -76,6 +75,13 @@ const getPageInfo = (pathname) => {
       title: "Providers",
       description: "Manage your AI provider connections",
       icon: "dns",
+      breadcrumbs: [],
+    };
+  if (pathname.includes("/import-export"))
+    return {
+      title: "Import / Export",
+      description: "Transfer combo definitions and routing settings",
+      icon: "import_export",
       breadcrumbs: [],
     };
   if (pathname.includes("/combos"))
@@ -156,8 +162,6 @@ const getPageInfo = (pathname) => {
       icon: "settings",
       breadcrumbs: [],
     };
-  const customPageInfo = getCustomPageInfo(pathname);
-  if (customPageInfo) return customPageInfo;
   if (pathname.includes("/translator"))
     return {
       title: "Translator",
@@ -246,32 +250,34 @@ export default function Header({ onMenuClick, showMenuButton = true }) {
       {/* Page title with breadcrumbs */}
       <div className="flex flex-col min-w-0 flex-1">
         {breadcrumbs.length > 0 ? (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
             {breadcrumbs.map((crumb, index) => (
               <div
                 key={`${crumb.label}-${crumb.href || "current"}`}
-                className="flex items-center gap-2"
+                className={`items-center gap-1.5 sm:gap-2 min-w-0 ${
+                  index < breadcrumbs.length - 1 ? "hidden sm:flex shrink-0" : "flex flex-1"
+                }`}
               >
                 {index > 0 && (
-                  <span className="material-symbols-outlined text-text-muted text-base">
+                  <span className="material-symbols-outlined text-text-muted text-base hidden sm:inline">
                     chevron_right
                   </span>
                 )}
                 {crumb.href ? (
                   <Link
                     href={crumb.href}
-                    className="text-text-muted hover:text-primary transition-colors"
+                    className="text-text-muted hover:text-primary transition-colors truncate"
                   >
                     {crumb.label}
                   </Link>
                 ) : (
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
                     {crumb.image && (
                       <ProviderIcon
                         src={crumb.image}
                         alt={crumb.label}
                         size={28}
-                        className="object-contain rounded max-w-[28px] max-h-[28px]"
+                        className="object-contain rounded max-w-[24px] max-h-[24px] sm:max-w-[28px] sm:max-h-[28px] shrink-0"
                         fallbackText={crumb.label.slice(0, 2).toUpperCase()}
                       />
                     )}
@@ -321,7 +327,7 @@ export default function Header({ onMenuClick, showMenuButton = true }) {
         <HeaderSearch />
         <button
           onClick={() => setDonateOpen(true)}
-          className="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-pink-500/30 bg-pink-500/10 text-pink-600 dark:text-pink-400 hover:bg-pink-500/20 transition-colors text-sm font-medium"
+          className="hidden sm:flex items-center gap-1.5 px-3 h-8 rounded-lg border border-pink-500/30 bg-pink-500/10 text-pink-600 dark:text-pink-400 hover:bg-pink-500/20 transition-colors text-sm font-medium"
           aria-label="Donate"
         >
           <span className="material-symbols-outlined text-[18px]">volunteer_activism</span>
