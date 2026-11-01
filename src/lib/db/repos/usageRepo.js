@@ -1,4 +1,5 @@
 import { EventEmitter } from "events";
+import { createHash } from "node:crypto";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
@@ -565,9 +566,8 @@ export async function getUsageStats(period = "all") {
         if (stats.byAccount[accountKey] && new Date(ts) > new Date(stats.byAccount[accountKey].lastUsed)) stats.byAccount[accountKey].lastUsed = ts;
       }
 
-      const apiKeyKey = (e.apiKey && typeof e.apiKey === "string")
-        ? `${e.apiKey}|${e.model}|${e.provider || "unknown"}`
-        : "local-no-key";
+      const apiKeyVal = (e.apiKey && typeof e.apiKey === "string") ? e.apiKey : "local-no-key";
+      const apiKeyKey = `${apiKeyVal}|${e.model}|${e.provider || "unknown"}`;
       if (stats.byApiKey[apiKeyKey] && new Date(ts) > new Date(stats.byApiKey[apiKeyKey].lastUsed)) stats.byApiKey[apiKeyKey].lastUsed = ts;
 
       const endpoint = e.endpoint || "Unknown";
@@ -649,10 +649,11 @@ export async function getUsageStats(period = "all") {
         ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
         if (new Date(r.timestamp) > new Date(ake.lastUsed)) ake.lastUsed = r.timestamp;
       } else {
-        if (!stats.byApiKey["local-no-key"]) {
-          stats.byApiKey["local-no-key"] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked: null, keyName: "Local (No API Key)", apiKeyKey: "local-no-key", lastUsed: r.timestamp };
+        const akKey = `local-no-key|${r.model}|${r.provider || "unknown"}`;
+        if (!stats.byApiKey[akKey]) {
+          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked: null, keyName: "Local (No API Key)", apiKeyKey: "local-no-key", lastUsed: r.timestamp };
         }
-        const ake = stats.byApiKey["local-no-key"];
+        const ake = stats.byApiKey[akKey];
         ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
         if (new Date(r.timestamp) > new Date(ake.lastUsed)) ake.lastUsed = r.timestamp;
       }
@@ -669,6 +670,17 @@ export async function getUsageStats(period = "all") {
   }
 
   stats.totalRequests = Object.values(stats.byProvider).reduce((sum, p) => sum + (p.requests || 0), 0);
+
+  // Keep full-key attribution internal, including the daily lastUsed overlay.
+  // Public IDs must not reveal credentials or merge keys sharing a display mask.
+  const publicByApiKey = {};
+  for (const [internalKey, entry] of Object.entries(stats.byApiKey)) {
+    const publicKey = "usage-key-" + createHash("sha256")
+      .update("usage-stats-api-key:v1\0").update(internalKey).digest("hex");
+    if (Object.hasOwn(publicByApiKey, publicKey)) throw new Error("Usage statistics identity collision");
+    publicByApiKey[publicKey] = entry;
+  }
+  stats.byApiKey = publicByApiKey;
   return stats;
 }
 

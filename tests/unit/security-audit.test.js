@@ -52,15 +52,44 @@ describe("AUDIT-002: API key masking", () => {
     expect(livePath.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("byApiKey object keys should use masked key, not raw key", () => {
-    const source = fs.readFileSync(
-      path.resolve(REPO_ROOT, "src/lib/db/repos/usageRepo.js"),
-      "utf-8"
-    );
-    // The 24h path should use apiKeyMasked in the akKey template
-    expect(source).toContain("${apiKeyMasked}|${r.model}|${r.provider");
-    // Should NOT use raw r.apiKey in the key
-    expect(source).not.toContain("${r.apiKey}|${r.model}|${r.provider");
+  it("byApiKey output should hide raw keys without merging equal display masks", async () => {
+    const { tmpdir } = await import("os");
+    const dataDir = fs.mkdtempSync(path.join(tmpdir(), "usage-security-"));
+    const previousDataDir = process.env.DATA_DIR;
+    const previousAdapter = global._dbAdapter;
+    process.env.DATA_DIR = dataDir;
+    delete global._dbAdapter;
+    vi.resetModules();
+    try {
+      const { saveRequestUsage, getUsageStats } = await import("@/lib/db/repos/usageRepo.js");
+      const keys = ["fixture-security-first-TAIL", "fixture-security-other-TAIL"];
+      for (const [index, apiKey] of keys.entries()) {
+        await saveRequestUsage({
+          apiKey, model: "fixture-model", provider: "fixture-provider",
+          timestamp: new Date().toISOString(),
+          tokens: { prompt_tokens: (index + 1) * 10, completion_tokens: 1 },
+        });
+      }
+      for (const period of ["all", "24h"]) {
+        const stats = await getUsageStats(period);
+        const serialized = JSON.stringify(stats);
+        for (const key of keys) {
+          expect(serialized.includes(key), "raw fixture key in serialized output").toBe(false);
+        }
+        const entries = Object.values(stats.byApiKey);
+        expect(entries).toHaveLength(2);
+        expect(entries.map((entry) => entry.promptTokens).sort((a, b) => a - b)).toEqual([10, 20]);
+        expect(entries[0].apiKeyMasked === entries[1].apiKeyMasked).toBe(true);
+      }
+    } finally {
+      for (const timer of Object.values(global._statsEmitTimers || {})) clearTimeout(timer);
+      global._dbAdapter?.instance?.close?.();
+      if (previousAdapter === undefined) delete global._dbAdapter;
+      else global._dbAdapter = previousAdapter;
+      if (previousDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = previousDataDir;
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 });
 
