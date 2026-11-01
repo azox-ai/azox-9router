@@ -342,6 +342,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     let result;
     try {
       result = await handleChatCore({
+        signal: request?.signal,
         body: { ...body, model: `${provider}/${model}` },
         modelInfo: { provider, model },
         credentials: refreshedCredentials,
