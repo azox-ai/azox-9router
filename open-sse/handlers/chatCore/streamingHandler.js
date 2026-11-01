@@ -12,6 +12,55 @@ import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
 import { upstreamResponseHeaders } from "../../utils/upstreamHeaders.js";
 import { createErrorResult } from "../../utils/error.js";
 
+const NON_SSE_BODY_MAX_BYTES = 16 * 1024;
+const NON_SSE_BODY_TIMEOUT_MS = 5000;
+
+async function readNonSSEBody(response, signal) {
+  if (!response.body) return '';
+  let reader;
+  const bytes = new Uint8Array(NON_SSE_BODY_MAX_BYTES);
+  let length = 0;
+  let done = false;
+  let emptyReads = 0;
+  let timeout;
+  let stop;
+  const stopped = new Promise(resolve => { stop = () => resolve(null); });
+  const onAbort = () => stop();
+  try {
+    reader = response.body.getReader();
+    timeout = setTimeout(stop, NON_SSE_BODY_TIMEOUT_MS);
+    if (signal?.aborted) return '';
+    signal?.addEventListener('abort', onAbort, { once: true });
+    while (length < bytes.length) {
+      const chunk = await Promise.race([reader.read(), stopped]);
+      if (!chunk) break;
+      if (chunk.done) { done = true; break; }
+      const value = chunk.value;
+      if (!value?.byteLength) {
+        if (++emptyReads >= 32) break;
+        continue;
+      }
+      emptyReads = 0;
+      const count = Math.min(value.byteLength, bytes.length - length);
+      bytes.set(value.subarray(0, count), length);
+      length += count;
+    }
+    return new TextDecoder().decode(bytes.subarray(0, length));
+  } catch {
+    return '';
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', onAbort);
+    if (reader) {
+      // Do not let upstream cancellation hold up the complete error response.
+      if (!done) {
+        try { Promise.resolve(reader.cancel()).catch(() => {}); } catch { /* best-effort cancellation */ }
+      }
+      reader.releaseLock();
+    }
+  }
+}
+
 // Codex returns Responses API SSE → which client format to translate INTO, by request sourceFormat.
 // Gemini-family all map to ANTIGRAVITY decoder; unknown sources fall back to OPENAI.
 const CODEX_SOURCE_TO_TARGET = {
@@ -59,7 +108,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
   // (the UI may render error.message as HTML).
   const upstreamContentType = (providerResponse.headers.get('content-type') || '').toLowerCase();
   if (upstreamContentType && !upstreamContentType.includes('text/event-stream') && !upstreamContentType.includes('application/json')) {
-    const bodyText = await providerResponse.text().catch(() => '');
+    const bodyText = await readNonSSEBody(providerResponse, streamController?.signal);
     const titleMatch = bodyText.match(/<title>([^<]+)<\/title>/i);
     const sanitizedTitle = (titleMatch?.[1] || '').replace(/<[^>]*>/g, '').replace(/[\r\n]+/g, ' ').trim().slice(0, 160);
     const shortMsg = sanitizedTitle
