@@ -1,9 +1,9 @@
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { copyStandaloneAssets } from "../../scripts/copy-standalone-assets.mjs";
+import { DISTRIBUTION_NOTICE_FILES, copyStandaloneAssets } from "../../scripts/copy-standalone-assets.mjs";
 
 function createBuildFixture(distDir) {
   const projectRoot = mkdtempSync(join(tmpdir(), "9router-standalone-assets-"));
@@ -15,6 +15,10 @@ function createBuildFixture(distDir) {
   writeFileSync(join(buildRoot, "static", "chunks", "app.js"), "static asset");
   writeFileSync(join(projectRoot, "public", "favicon.svg"), "public asset");
   writeFileSync(join(projectRoot, "node_modules", "sql.js", "dist", "sql-wasm.wasm"), "wasm asset");
+  for (const path of DISTRIBUTION_NOTICE_FILES) {
+    mkdirSync(dirname(join(projectRoot, path)), { recursive: true });
+    writeFileSync(join(projectRoot, path), `notice ${path}`);
+  }
   return projectRoot;
 }
 
@@ -74,5 +78,29 @@ describe("standalone build assets", () => {
 
     expect(() => copyStandaloneAssets({ projectRoot, distDir: ".next" }))
       .toThrow("Required SQL.js runtime asset is missing");
+  });
+
+  it("ships license and third-party notice files beside the standalone server", () => {
+    const projectRoot = createBuildFixture(".next");
+
+    copyStandaloneAssets({ projectRoot, distDir: ".next" });
+
+    expect(DISTRIBUTION_NOTICE_FILES).toEqual([
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
+      "third_party/licenses/LGPL-3.0.txt",
+      "third_party/licenses/GPL-3.0.txt",
+    ]);
+    for (const path of DISTRIBUTION_NOTICE_FILES) {
+      expect(readFileSync(join(projectRoot, ".next", "standalone", path), "utf8")).toBe(`notice ${path}`);
+    }
+  });
+
+  it("fails the standalone postbuild when a distribution notice is missing", () => {
+    const projectRoot = createBuildFixture(".next");
+    unlinkSync(join(projectRoot, "THIRD_PARTY_NOTICES.md"));
+
+    expect(() => copyStandaloneAssets({ projectRoot, distDir: ".next" }))
+      .toThrow(/Required distribution notice is missing/);
   });
 });

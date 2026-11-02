@@ -50,13 +50,26 @@
     "independent_review": false,
     "immutable_artifact_retained": false,
     "remaining_gaps": [
-      "Dependency advisory data/scan and actual shipped license/notice closure: libvips LGPL, sharp mixed notices, MPL/CC-BY/dual licenses, noble-hashes attribution and Alpine/ffmpeg/SBOM.",
+      "Dependency advisory data/scan remains open. License/notice gap narrowed by AZO-1098 (see third_party_notices); still open: image SBOM for musl platform packages, apk su-exec/ffmpeg and the Alpine base image (no license claimed), attribution review of code bundled into .next chunks (e.g. dompurify via monaco-editor), next/dist/compiled and noble-hashes-derived open-sse/lib/deepseek-pow-hash.js.",
       "Native prefill line67 unexecuted; cloud collection gap, 98 skipped and one todo retained. Node source fixtures do not qualify native musl/arm64 or OCI runtime.",
       "No retained immutable release artifact or image provenance/architecture/runtime proof.",
       "master-to-candidate diff check exits2 at tests/unit/gemini-contents-normalization.test.js:196 (new blank line at EOF); source cleanup belongs to a subsequent output.",
       "Changed head needs appropriately reserved qualification and fresh exact-head security/release review; A3 reuse requires evidence of unchanged identities/behavior.",
       "Repository linear-history/check gates, isolated migration/backup/rollback and direct/LiteLLM rollout proof remain required; no release/deploy/Result from AZO-1079."
     ]
+  },
+  "third_party_notices": {
+    "task": "AZO-1098",
+    "source_head": "2e696eccb9c6803c9012642dc8822c1d2642722c",
+    "root_license": "MIT (package.json license field matches LICENSE)",
+    "notice": "THIRD_PARTY_NOTICES.md",
+    "generator": "node scripts/generate-third-party-notices.mjs [--check]",
+    "inputs": ["third_party/standalone-closure-glibc-x64.json", "third_party/license-sources.json", "third_party/license-sources/", "package-lock.json", "Dockerfile"],
+    "license_texts": ["third_party/licenses/LGPL-3.0.txt", "third_party/licenses/GPL-3.0.txt"],
+    "coverage": "59 traced glibc x64 standalone packages plus Dockerfile copies node-forge, next, sql.js, node-machine-id, wreq-js, @wreq-js/binding-linux-x64-gnu, playwright-core (64 install paths). libvips/sharp LGPL-3.0-or-later terms and replacement method; caniuse-lite CC-BY-4.0 attribution; node-forge BSD-3-Clause elected.",
+    "shipping": "scripts/copy-standalone-assets.mjs copies LICENSE, THIRD_PARTY_NOTICES.md and third_party/licenses/* into .next/standalone; Dockerfile COPY of .next/standalone places them at /app. Not read at runtime.",
+    "tests": ["tests/unit/third-party-notices.node-test.js", "tests/unit/standalone-assets.test.js"],
+    "limits": "Closure is glibc x64; image is Alpine musl amd64/arm64 and has no SBOM. apk su-exec/ffmpeg, Alpine base packages, bundled .next chunks, next/dist/compiled and ported source attribution are not cleared. No build, target launch or image for this change."
   },
   "build_reproducibility": {
     "task": "AZO-969",

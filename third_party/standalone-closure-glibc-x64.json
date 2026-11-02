@@ -1,0 +1,365 @@
+{
+ "head": "2e696eccb9c6803c9012642dc8822c1d2642722c",
+ "note": "Traced .next/standalone/node_modules from sandbox build on linux-x64 glibc kit; Docker runner is linux musl, so platform-specific packages differ in image. Plus Dockerfile COPY node-forge/next/sql.js/node-machine-id, wreq-js/@wreq-js/playwright-core, apk su-exec ffmpeg not in this list.",
+ "closure": {
+  "present": true,
+  "packages": [
+   {
+    "path": "node_modules/@aws/lambda-invoke-store",
+    "name": "@aws/lambda-invoke-store",
+    "version": "0.3.0",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/core",
+    "name": "@aws-sdk/core",
+    "version": "3.978.7",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/credential-provider-cognito-identity",
+    "name": "@aws-sdk/credential-provider-cognito-identity",
+    "version": "3.972.77",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/credential-provider-env",
+    "name": "@aws-sdk/credential-provider-env",
+    "version": "3.972.78",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/credential-provider-http",
+    "name": "@aws-sdk/credential-provider-http",
+    "version": "3.972.80",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/credential-provider-ini",
+    "name": "@aws-sdk/credential-provider-ini",
+    "version": "3.973.23",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/credential-provider-login",
+    "name": "@aws-sdk/credential-provider-login",
+    "version": "3.972.85",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/credential-provider-node",
+    "name": "@aws-sdk/credential-provider-node",
+    "version": "3.972.90",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/credential-provider-process",
+    "name": "@aws-sdk/credential-provider-process",
+    "version": "3.972.78",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/credential-provider-sso",
+    "name": "@aws-sdk/credential-provider-sso",
+    "version": "3.973.22",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/credential-provider-web-identity",
+    "name": "@aws-sdk/credential-provider-web-identity",
+    "version": "3.972.84",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/credential-providers",
+    "name": "@aws-sdk/credential-providers",
+    "version": "3.1159.0",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/nested-clients",
+    "name": "@aws-sdk/nested-clients",
+    "version": "3.997.52",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/signature-v4-multi-region",
+    "name": "@aws-sdk/signature-v4-multi-region",
+    "version": "3.996.50",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/token-providers",
+    "name": "@aws-sdk/token-providers",
+    "version": "3.1159.0",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@aws-sdk/xml-builder",
+    "name": "@aws-sdk/xml-builder",
+    "version": "3.972.42",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@emnapi/runtime",
+    "name": "@emnapi/runtime",
+    "version": "1.11.3",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/@img/colour",
+    "name": "@img/colour",
+    "version": "1.1.0",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/@img/sharp-libvips-linux-x64",
+    "name": "@img/sharp-libvips-linux-x64",
+    "version": "1.3.4",
+    "license": "LGPL-3.0-or-later"
+   },
+   {
+    "path": "node_modules/@img/sharp-linux-x64",
+    "name": "@img/sharp-linux-x64",
+    "version": "0.35.5",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@img/sharp-wasm32",
+    "name": "@img/sharp-wasm32",
+    "version": "0.35.5",
+    "license": "Apache-2.0 AND LGPL-3.0-or-later AND MIT"
+   },
+   {
+    "path": "node_modules/@next/env",
+    "name": "@next/env",
+    "version": "16.4.3",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/@smithy/core",
+    "name": "@smithy/core",
+    "version": "3.37.0",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@smithy/credential-provider-imds",
+    "name": "@smithy/credential-provider-imds",
+    "version": "4.5.2",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@smithy/node-http-handler",
+    "name": "@smithy/node-http-handler",
+    "version": "4.13.0",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@smithy/signature-v4",
+    "name": "@smithy/signature-v4",
+    "version": "5.7.4",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@smithy/types",
+    "name": "@smithy/types",
+    "version": "4.19.0",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/@swc/helpers",
+    "name": "@swc/helpers",
+    "version": "0.5.23",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/baseline-browser-mapping",
+    "name": "baseline-browser-mapping",
+    "version": "2.11.34",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/better-sqlite3",
+    "name": "better-sqlite3",
+    "version": "12.11.1",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/bindings",
+    "name": "bindings",
+    "version": "1.5.0",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/bowser",
+    "name": "bowser",
+    "version": "2.15.0",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/bundle-name",
+    "name": "bundle-name",
+    "version": "4.1.1",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/caniuse-lite",
+    "name": "caniuse-lite",
+    "version": "1.0.30001820",
+    "license": "CC-BY-4.0"
+   },
+   {
+    "path": "node_modules/client-only",
+    "name": "client-only",
+    "version": "0.0.1",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/default-browser",
+    "name": "default-browser",
+    "version": "5.5.1",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/default-browser-id",
+    "name": "default-browser-id",
+    "version": "5.0.1",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/define-lazy-prop",
+    "name": "define-lazy-prop",
+    "version": "3.0.0",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/detect-libc",
+    "name": "detect-libc",
+    "version": "2.1.2",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/file-uri-to-path",
+    "name": "file-uri-to-path",
+    "version": "1.0.0",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/is-docker",
+    "name": "is-docker",
+    "version": "3.0.0",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/is-in-ssh",
+    "name": "is-in-ssh",
+    "version": "1.0.0",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/is-inside-container",
+    "name": "is-inside-container",
+    "version": "1.0.0",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/is-wsl",
+    "name": "is-wsl",
+    "version": "3.1.1",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/nanoid",
+    "name": "nanoid",
+    "version": "3.3.20",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/next/node_modules/postcss",
+    "name": "postcss",
+    "version": "8.5.23",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/next",
+    "name": "next",
+    "version": "16.4.3",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/open",
+    "name": "open",
+    "version": "11.0.4",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/picocolors",
+    "name": "picocolors",
+    "version": "1.1.1",
+    "license": "ISC"
+   },
+   {
+    "path": "node_modules/powershell-utils",
+    "name": "powershell-utils",
+    "version": "0.2.1",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/react",
+    "name": "react",
+    "version": "19.2.4",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/react-dom",
+    "name": "react-dom",
+    "version": "19.2.4",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/run-applescript",
+    "name": "run-applescript",
+    "version": "7.1.0",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/sharp/node_modules/semver",
+    "name": "semver",
+    "version": "7.8.5",
+    "license": "ISC"
+   },
+   {
+    "path": "node_modules/sharp",
+    "name": "sharp",
+    "version": "0.35.5",
+    "license": "Apache-2.0"
+   },
+   {
+    "path": "node_modules/source-map-js",
+    "name": "source-map-js",
+    "version": "1.2.2",
+    "license": "BSD-3-Clause"
+   },
+   {
+    "path": "node_modules/sql.js",
+    "name": "sql.js",
+    "version": "1.15.2",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/styled-jsx",
+    "name": "styled-jsx",
+    "version": "5.1.6",
+    "license": "MIT"
+   },
+   {
+    "path": "node_modules/wsl-utils",
+    "name": "wsl-utils",
+    "version": "1.0.1",
+    "license": "MIT"
+   }
+  ],
+  "package_count": 59,
+  "file_count": 3542
+ }
+}

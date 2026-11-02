@@ -1,0 +1,948 @@
+{
+  "kit": "AZO-1083 offline-kit, verified by AZO-1088",
+  "closure_head": "2e696eccb9c6803c9012642dc8822c1d2642722c",
+  "packages": [
+    {
+      "path": "node_modules/@aws-sdk/core",
+      "name": "@aws-sdk/core",
+      "version": "3.978.7",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "f9d0dbf0d0e8f749705e48d762e5c0e383de21e95eb9754c22f772cc3465ae63",
+      "files": [
+        {
+          "path": "third_party/license-sources/@aws-sdk/core/LICENSE",
+          "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@aws-sdk/credential-provider-cognito-identity",
+      "name": "@aws-sdk/credential-provider-cognito-identity",
+      "version": "3.972.77",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "436fff760cd7b204572813e76c3425bc82315ab2e2bfae5cd4775f09d94d5f50",
+      "files": [
+        {
+          "path": "third_party/license-sources/@aws-sdk/credential-provider-cognito-identity/LICENSE",
+          "sha256": "e345c2ee7df4446e739de7b91535f0c10ddcd909b9753889e943ee637b05db8c"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@aws-sdk/credential-provider-env",
+      "name": "@aws-sdk/credential-provider-env",
+      "version": "3.972.78",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "c4966af49c642118d27fded5b8a28d9ae08f289796629372f5d8b31e32377ef8",
+      "files": [
+        {
+          "path": "third_party/license-sources/@aws-sdk/credential-provider-env/LICENSE",
+          "sha256": "d82ceb8cbd004a2d4834085c557d55459f528e30268d95159ee1e4030a693a6e"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@aws-sdk/credential-provider-http",
+      "name": "@aws-sdk/credential-provider-http",
+      "version": "3.972.80",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "fa20644c970ee81411bd9fe2989d6f1e86a661faa1cbb7cb5942a7c3788f982d",
+      "files": []
+    },
+    {
+      "path": "node_modules/@aws-sdk/credential-provider-ini",
+      "name": "@aws-sdk/credential-provider-ini",
+      "version": "3.973.23",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "a3ca0241eeccd8bcc098263dd1936444b9f69b853af3e670f74f2e898c7a11f2",
+      "files": [
+        {
+          "path": "third_party/license-sources/@aws-sdk/credential-provider-ini/LICENSE",
+          "sha256": "d82ceb8cbd004a2d4834085c557d55459f528e30268d95159ee1e4030a693a6e"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@aws-sdk/credential-provider-login",
+      "name": "@aws-sdk/credential-provider-login",
+      "version": "3.972.85",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "77ba3cace1f0eba84ba75030bdd4f07d52c6e5192e13605d09470f31bb935c78",
+      "files": []
+    },
+    {
+      "path": "node_modules/@aws-sdk/credential-provider-node",
+      "name": "@aws-sdk/credential-provider-node",
+      "version": "3.972.90",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "c7c18cc937c9929c75f6e43db08082112a85f61c95c4255aa1a5cd3e660913cf",
+      "files": [
+        {
+          "path": "third_party/license-sources/@aws-sdk/credential-provider-node/LICENSE",
+          "sha256": "d82ceb8cbd004a2d4834085c557d55459f528e30268d95159ee1e4030a693a6e"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@aws-sdk/credential-provider-process",
+      "name": "@aws-sdk/credential-provider-process",
+      "version": "3.972.78",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "c479943e398898444d6014a0668726cd32a613d06ce5977a79ed3bf4181c611a",
+      "files": [
+        {
+          "path": "third_party/license-sources/@aws-sdk/credential-provider-process/LICENSE",
+          "sha256": "2ef1e48ea743d9c82313e6887858f7c1feaddd636f5a3f43926aab0143e67ebd"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@aws-sdk/credential-provider-sso",
+      "name": "@aws-sdk/credential-provider-sso",
+      "version": "3.973.22",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "0de1d8aa1b71ed0b8bb09df00e9a3e04fd5f17be76a568d96fdbaf048c3a37bb",
+      "files": [
+        {
+          "path": "third_party/license-sources/@aws-sdk/credential-provider-sso/LICENSE",
+          "sha256": "2ef1e48ea743d9c82313e6887858f7c1feaddd636f5a3f43926aab0143e67ebd"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@aws-sdk/credential-provider-web-identity",
+      "name": "@aws-sdk/credential-provider-web-identity",
+      "version": "3.972.84",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "1f980c3b7ad04a1d5e1741c61b865c76dc8ec5c0519ced1f253da944d3057f03",
+      "files": [
+        {
+          "path": "third_party/license-sources/@aws-sdk/credential-provider-web-identity/LICENSE",
+          "sha256": "2ef1e48ea743d9c82313e6887858f7c1feaddd636f5a3f43926aab0143e67ebd"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@aws-sdk/credential-providers",
+      "name": "@aws-sdk/credential-providers",
+      "version": "3.1159.0",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "d51ee79910374b325d95b611c4638fc1417f0ec2eb2b77b45dc2ed6c8344efca",
+      "files": [
+        {
+          "path": "third_party/license-sources/@aws-sdk/credential-providers/LICENSE",
+          "sha256": "d82ceb8cbd004a2d4834085c557d55459f528e30268d95159ee1e4030a693a6e"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@aws-sdk/nested-clients",
+      "name": "@aws-sdk/nested-clients",
+      "version": "3.997.52",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "87c1cfd8cad0f19d7b885291233928d5afc13f4fbe5d0fbec00e4cc2496c40c4",
+      "files": []
+    },
+    {
+      "path": "node_modules/@aws-sdk/signature-v4-multi-region",
+      "name": "@aws-sdk/signature-v4-multi-region",
+      "version": "3.996.50",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "93e07e038fa8873abf16a1157629fcc7c22aafb76b0e53b61eca6dd21f64369b",
+      "files": [
+        {
+          "path": "third_party/license-sources/@aws-sdk/signature-v4-multi-region/LICENSE",
+          "sha256": "07364a5f7d0177a59a05a0002187431f8f899320983c0dc049d72df015e8064c"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@aws-sdk/token-providers",
+      "name": "@aws-sdk/token-providers",
+      "version": "3.1159.0",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "1aeec2f504b51330780d346934fa1e25e15db55017ab8561b2427a4799907832",
+      "files": [
+        {
+          "path": "third_party/license-sources/@aws-sdk/token-providers/LICENSE",
+          "sha256": "d82ceb8cbd004a2d4834085c557d55459f528e30268d95159ee1e4030a693a6e"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@aws-sdk/xml-builder",
+      "name": "@aws-sdk/xml-builder",
+      "version": "3.972.42",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/aws/aws-sdk-js-v3.git",
+      "metadata_sha256": "19ffd11b356fdda2a6e53b130a6844264182c4ea611b141f8600f102140839ba",
+      "files": [
+        {
+          "path": "third_party/license-sources/@aws-sdk/xml-builder/LICENSE",
+          "sha256": "d82ceb8cbd004a2d4834085c557d55459f528e30268d95159ee1e4030a693a6e"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@aws/lambda-invoke-store",
+      "name": "@aws/lambda-invoke-store",
+      "version": "0.3.0",
+      "license": "Apache-2.0",
+      "author": "Amazon Web Services",
+      "repository": "git+https://github.com/awslabs/aws-lambda-invoke-store.git",
+      "metadata_sha256": "67dd0cc15cb17df9e12654a78486e710e13a2e96623cb28c683056378fa973dc",
+      "files": [
+        {
+          "path": "third_party/license-sources/@aws/lambda-invoke-store/LICENSE",
+          "sha256": "09e8a9bcec8067104652c168685ab0931e7868f9c8284b66f5ae6edae5f1130b"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@emnapi/runtime",
+      "name": "@emnapi/runtime",
+      "version": "1.11.3",
+      "license": "MIT",
+      "author": "toyobayashi",
+      "repository": "git+https://github.com/toyobayashi/emnapi.git",
+      "metadata_sha256": "751db16171cb4d111905122be8a4c0dc2b5c82e6ba2a590ca24fbc6cca048f93",
+      "files": [
+        {
+          "path": "third_party/license-sources/@emnapi/runtime/LICENSE",
+          "sha256": "2088f55c6731498410b20c95ebd345ed4a4a800bf74c0fba4d282fd2a021daaa"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@img/colour",
+      "name": "@img/colour",
+      "version": "1.1.0",
+      "license": "MIT",
+      "author": null,
+      "repository": "git+https://github.com/lovell/colour.git",
+      "metadata_sha256": "bc38c5097693ed53b91c32f35fb0a52569736c7854ba2eb6d080f3252071f75c",
+      "files": [
+        {
+          "path": "third_party/license-sources/@img/colour/LICENSE.md",
+          "sha256": "e2eaa4603c14cb26f301e88648c12a853fa3f0f5da6d4b0972958c666e7f2ab8"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@img/sharp-libvips-linux-x64",
+      "name": "@img/sharp-libvips-linux-x64",
+      "version": "1.3.4",
+      "license": "LGPL-3.0-or-later",
+      "author": "Lovell Fuller <npm@lovell.info>",
+      "repository": "git+https://github.com/lovell/sharp-libvips.git",
+      "metadata_sha256": "2c5f6f9abf74c1492622d5dc4e4da056ab0712fd71de61e03a687c88b8cdab4e",
+      "files": [
+        {
+          "path": "third_party/license-sources/@img/sharp-libvips-linux-x64/README.md",
+          "sha256": "b4fb1a9f5909cfd58edb4177c2028ce3033cf8651aef740a554c1dc58b3c5ee3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@img/sharp-linux-x64",
+      "name": "@img/sharp-linux-x64",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
+      "author": "Lovell Fuller <npm@lovell.info>",
+      "repository": "git+https://github.com/lovell/sharp.git",
+      "metadata_sha256": "181c58413d16ac3ce035f39c94c614031e03c023d88315712a81ed210c9fa04c",
+      "files": [
+        {
+          "path": "third_party/license-sources/@img/sharp-linux-x64/LICENSE",
+          "sha256": "73ba74dfaa520b49a401b5d21459a8523a146f3b7518a833eea5efa85130bf68"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@img/sharp-wasm32",
+      "name": "@img/sharp-wasm32",
+      "version": "0.35.5",
+      "license": "Apache-2.0 AND LGPL-3.0-or-later AND MIT",
+      "author": "Lovell Fuller <npm@lovell.info>",
+      "repository": "git+https://github.com/lovell/sharp.git",
+      "metadata_sha256": "59d5eeaaac1c43434701f08e9ea78648aa54011159ff2eb192550432608e05c1",
+      "files": [
+        {
+          "path": "third_party/license-sources/@img/sharp-wasm32/LICENSE",
+          "sha256": "73ba74dfaa520b49a401b5d21459a8523a146f3b7518a833eea5efa85130bf68"
+        },
+        {
+          "path": "third_party/license-sources/@img/sharp-wasm32/README.md",
+          "sha256": "9d7a84ade91e8e50f5dfc303fb53e580e806f6f89bde804e84a01c1b8853fff5"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@next/env",
+      "name": "@next/env",
+      "version": "16.4.3",
+      "license": "MIT",
+      "author": "Next.js Team <support@vercel.com>",
+      "repository": "https://github.com/vercel/next.js",
+      "metadata_sha256": "5c3e97438c259deea8ea09be9c9aa1943754da208b8a6e7c93ab12a63f925852",
+      "files": []
+    },
+    {
+      "path": "node_modules/@smithy/core",
+      "name": "@smithy/core",
+      "version": "3.37.0",
+      "license": "Apache-2.0",
+      "author": "AWS Smithy Team",
+      "repository": "https://github.com/smithy-lang/smithy-typescript.git",
+      "metadata_sha256": "a5a7cd0742e3ebdacc26e0839450082ad73292badefe74b91dabbb7cfccec75d",
+      "files": [
+        {
+          "path": "third_party/license-sources/@smithy/core/LICENSE",
+          "sha256": "07364a5f7d0177a59a05a0002187431f8f899320983c0dc049d72df015e8064c"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@smithy/credential-provider-imds",
+      "name": "@smithy/credential-provider-imds",
+      "version": "4.5.2",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/smithy-lang/smithy-typescript.git",
+      "metadata_sha256": "1e3b437bfaf7800cbcd770cc744084ab9e3b6c445196b707fde90e2f66e0403c",
+      "files": [
+        {
+          "path": "third_party/license-sources/@smithy/credential-provider-imds/LICENSE",
+          "sha256": "d82ceb8cbd004a2d4834085c557d55459f528e30268d95159ee1e4030a693a6e"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@smithy/node-http-handler",
+      "name": "@smithy/node-http-handler",
+      "version": "4.13.0",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/smithy-lang/smithy-typescript.git",
+      "metadata_sha256": "bf9f6f3cdae46b963aff4b18c3e98cb9bbfb813030d58cf6f15488013852b488",
+      "files": [
+        {
+          "path": "third_party/license-sources/@smithy/node-http-handler/LICENSE",
+          "sha256": "d82ceb8cbd004a2d4834085c557d55459f528e30268d95159ee1e4030a693a6e"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@smithy/signature-v4",
+      "name": "@smithy/signature-v4",
+      "version": "5.7.4",
+      "license": "Apache-2.0",
+      "author": "AWS SDK for JavaScript Team",
+      "repository": "https://github.com/smithy-lang/smithy-typescript.git",
+      "metadata_sha256": "d4794533b211f0100c0be02a8d35b677db84d84a7061ad7c0c6bb0bc5394cf11",
+      "files": [
+        {
+          "path": "third_party/license-sources/@smithy/signature-v4/LICENSE",
+          "sha256": "d82ceb8cbd004a2d4834085c557d55459f528e30268d95159ee1e4030a693a6e"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@smithy/types",
+      "name": "@smithy/types",
+      "version": "4.19.0",
+      "license": "Apache-2.0",
+      "author": "AWS Smithy Team",
+      "repository": "https://github.com/smithy-lang/smithy-typescript.git",
+      "metadata_sha256": "3de7840fd63a03c33bb687fbdc4794884598402600b2ee02c68856e78e41bd52",
+      "files": [
+        {
+          "path": "third_party/license-sources/@smithy/types/LICENSE",
+          "sha256": "07364a5f7d0177a59a05a0002187431f8f899320983c0dc049d72df015e8064c"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@swc/helpers",
+      "name": "@swc/helpers",
+      "version": "0.5.23",
+      "license": "Apache-2.0",
+      "author": "강동윤 <kdy1997.dev@gmail.com>",
+      "repository": "git+https://github.com/swc-project/swc.git",
+      "metadata_sha256": "10ee79b75759afbf8cfa2b8e5a2eff946c487143e935fc31b2433aa68be84596",
+      "files": [
+        {
+          "path": "third_party/license-sources/@swc/helpers/LICENSE",
+          "sha256": "d96eba1f1881334d50ffc144276dfa98e147a415e7c591ecdfcb81680361dc91"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/@wreq-js/binding-linux-x64-gnu",
+      "name": "@wreq-js/binding-linux-x64-gnu",
+      "version": "3.2.0",
+      "license": "MIT",
+      "author": "Oleksandr Herasymov <herasymov7@icloud.com>",
+      "repository": "git+https://github.com/sqdshguy/wreq-js.git",
+      "metadata_sha256": "57ef2b7c91d833997b2366a325044a5af825aaa202629446f7567ddfd81782a6",
+      "files": []
+    },
+    {
+      "path": "node_modules/baseline-browser-mapping",
+      "name": "baseline-browser-mapping",
+      "version": "2.11.34",
+      "license": "Apache-2.0",
+      "author": null,
+      "repository": "git+https://github.com/web-platform-dx/baseline-browser-mapping.git",
+      "metadata_sha256": "8b3da1fa8e345541bfeb0430b87aaea40ceb708f50f9755af4c2b34b4c3068a3",
+      "files": [
+        {
+          "path": "third_party/license-sources/baseline-browser-mapping/LICENSE.txt",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/better-sqlite3",
+      "name": "better-sqlite3",
+      "version": "12.11.1",
+      "license": "MIT",
+      "author": "Joshua Wise <joshuathomaswise@gmail.com>",
+      "repository": "git://github.com/WiseLibs/better-sqlite3.git",
+      "metadata_sha256": "4665126292eff5dffe6c0ffabf98c4de18e479aa0b53edd775028eb567b3ecc1",
+      "files": [
+        {
+          "path": "third_party/license-sources/better-sqlite3/LICENSE",
+          "sha256": "09856b52897c91ab67e7456ef43067019f31dfd3b87fda72e655736b1ebdee55"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/bindings",
+      "name": "bindings",
+      "version": "1.5.0",
+      "license": "MIT",
+      "author": "Nathan Rajlich <nathan@tootallnate.net> (http://tootallnate.net)",
+      "repository": "git://github.com/TooTallNate/node-bindings.git",
+      "metadata_sha256": "a87721fe406e1f1798fef44d697b46ea1efe346fda118010334713346ee4207c",
+      "files": [
+        {
+          "path": "third_party/license-sources/bindings/LICENSE.md",
+          "sha256": "85fde19744c84cfacb04aed732c0392ba221231b26090d3271d2ed865bfc0792"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/bowser",
+      "name": "bowser",
+      "version": "2.15.0",
+      "license": "MIT",
+      "author": "Dustin Diaz <dustin@dustindiaz.com> (http://dustindiaz.com)",
+      "repository": "git+https://github.com/bowser-js/bowser.git",
+      "metadata_sha256": "e9d27c7ce8ccc41058a86bb94d6f22ef888a2c70c4166ed64421e0c7f229bd52",
+      "files": [
+        {
+          "path": "third_party/license-sources/bowser/LICENSE",
+          "sha256": "dfde54fedc270c2a305d9a9f993d93f706d34624455a2fd2d2a05ca34d8ae8c3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/bundle-name",
+      "name": "bundle-name",
+      "version": "4.1.1",
+      "license": "MIT",
+      "author": "Sindre Sorhus",
+      "repository": "sindresorhus/bundle-name",
+      "metadata_sha256": "5255a5a5a08777b6b77c7c630c7dba93049380bc65c58c3640cfbc611ae2365d",
+      "files": [
+        {
+          "path": "third_party/license-sources/bundle-name/license",
+          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/caniuse-lite",
+      "name": "caniuse-lite",
+      "version": "1.0.30001820",
+      "license": "CC-BY-4.0",
+      "author": "Ben Briggs",
+      "repository": "browserslist/caniuse-lite",
+      "metadata_sha256": "54184911bb8ed2e192d3c8d61ffaf83b73b5d69e8cb1b7eb4ecc912061f890e7",
+      "files": [
+        {
+          "path": "third_party/license-sources/caniuse-lite/LICENSE",
+          "sha256": "fd3a263fe19ed8faa9068b43abaebafc02c77897b0c6fc09abc04bb592e5f16e"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/client-only",
+      "name": "client-only",
+      "version": "0.0.1",
+      "license": "MIT",
+      "author": null,
+      "repository": null,
+      "metadata_sha256": "4d6342705767832f299b9a59c28e4275bcf02db19472732f93f67d979441df8f",
+      "files": []
+    },
+    {
+      "path": "node_modules/default-browser",
+      "name": "default-browser",
+      "version": "5.5.1",
+      "license": "MIT",
+      "author": "Sindre Sorhus",
+      "repository": "sindresorhus/default-browser",
+      "metadata_sha256": "13a8cc1c9348cbc58c1b1093ce68ab89fa04e025454cf55b055a0ccc0a08cdbf",
+      "files": [
+        {
+          "path": "third_party/license-sources/default-browser/license",
+          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/default-browser-id",
+      "name": "default-browser-id",
+      "version": "5.0.1",
+      "license": "MIT",
+      "author": "Sindre Sorhus",
+      "repository": "sindresorhus/default-browser-id",
+      "metadata_sha256": "33d93cd9f507c701ecf0551213ddd0f22fba3ee958be14c4ef7045be79520f3c",
+      "files": [
+        {
+          "path": "third_party/license-sources/default-browser-id/license",
+          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/define-lazy-prop",
+      "name": "define-lazy-prop",
+      "version": "3.0.0",
+      "license": "MIT",
+      "author": "Sindre Sorhus",
+      "repository": "sindresorhus/define-lazy-prop",
+      "metadata_sha256": "178f70857bc4e5186ba8efb7a1e7d93d1c821fbf3bd3651f885dad08505fa795",
+      "files": [
+        {
+          "path": "third_party/license-sources/define-lazy-prop/license",
+          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/detect-libc",
+      "name": "detect-libc",
+      "version": "2.1.2",
+      "license": "Apache-2.0",
+      "author": "Lovell Fuller <npm@lovell.info>",
+      "repository": "git://github.com/lovell/detect-libc.git",
+      "metadata_sha256": "ee88e5b954fdf3a8480b1d01ef767d68d8ca2c6da269f58c5cf1c5550e9aa2a7",
+      "files": [
+        {
+          "path": "third_party/license-sources/detect-libc/LICENSE",
+          "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/file-uri-to-path",
+      "name": "file-uri-to-path",
+      "version": "1.0.0",
+      "license": "MIT",
+      "author": "Nathan Rajlich <nathan@tootallnate.net> (http://n8.io/)",
+      "repository": "git://github.com/TooTallNate/file-uri-to-path.git",
+      "metadata_sha256": "71eb1e24bb9694f89c613fa0aa307f977dd43f41d11794c7b48fabf6c55f66b0",
+      "files": [
+        {
+          "path": "third_party/license-sources/file-uri-to-path/LICENSE",
+          "sha256": "75070206e4ee2a749be52444cecc05101ca8d314c9d6d335ff914046cbf086a0"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/is-docker",
+      "name": "is-docker",
+      "version": "3.0.0",
+      "license": "MIT",
+      "author": "Sindre Sorhus",
+      "repository": "sindresorhus/is-docker",
+      "metadata_sha256": "927cc3f8e5e49d545679ebe9be754137f805a0f7f82de14a80492c3b627ca688",
+      "files": [
+        {
+          "path": "third_party/license-sources/is-docker/license",
+          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/is-in-ssh",
+      "name": "is-in-ssh",
+      "version": "1.0.0",
+      "license": "MIT",
+      "author": "Sindre Sorhus",
+      "repository": "sindresorhus/is-in-ssh",
+      "metadata_sha256": "5e5c2126dc1741ba763d522a76c5aa81ac3a6df7611cac6e449e1d18c7b5fd6a",
+      "files": [
+        {
+          "path": "third_party/license-sources/is-in-ssh/license",
+          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/is-inside-container",
+      "name": "is-inside-container",
+      "version": "1.0.0",
+      "license": "MIT",
+      "author": "Sindre Sorhus",
+      "repository": "sindresorhus/is-inside-container",
+      "metadata_sha256": "b030fc11899d813c3fab0dbb09639eab25f8a5d4af24d3854f1329bc0255bc2f",
+      "files": [
+        {
+          "path": "third_party/license-sources/is-inside-container/license",
+          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/is-wsl",
+      "name": "is-wsl",
+      "version": "3.1.1",
+      "license": "MIT",
+      "author": "Sindre Sorhus",
+      "repository": "sindresorhus/is-wsl",
+      "metadata_sha256": "d4b5a0df9783c78951de0dbd94832822d0660e553b0b5e2ffc0e19e5721a5af5",
+      "files": [
+        {
+          "path": "third_party/license-sources/is-wsl/license",
+          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/nanoid",
+      "name": "nanoid",
+      "version": "3.3.20",
+      "license": "MIT",
+      "author": "Andrey Sitnik <andrey@sitnik.ru>",
+      "repository": "ai/nanoid",
+      "metadata_sha256": "e2a77185ded1c006171e4e2f8b316d0e3b4c51a135a190851cfc888ea428f6bf",
+      "files": [
+        {
+          "path": "third_party/license-sources/nanoid/LICENSE",
+          "sha256": "da4db1480d9beea3483a2eda5c53b22238d0827d57da162b48f122e04d2d9987"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/next",
+      "name": "next",
+      "version": "16.4.3",
+      "license": "MIT",
+      "author": null,
+      "repository": "vercel/next.js",
+      "metadata_sha256": "b67bad7944d603b27dd2d2719b57203fd3b3e5c147b2efa6dea5ceb135274caf",
+      "files": [
+        {
+          "path": "third_party/license-sources/next/license.md",
+          "sha256": "ee765244e2d59f5234d474f62e0766fa0c8b99af967fdd4c0cb8dcb0c76ea224"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/next/node_modules/postcss",
+      "name": "postcss",
+      "version": "8.5.23",
+      "license": "MIT",
+      "author": "Andrey Sitnik <andrey@sitnik.es>",
+      "repository": "postcss/postcss",
+      "metadata_sha256": "df43e035f054943454c49556c89cea8a288d91f5d4b1a6f4e56d48b85c7ebd75",
+      "files": [
+        {
+          "path": "third_party/license-sources/next/node_modules/postcss/LICENSE",
+          "sha256": "5be1f3465bba68a626777f984878814aaf35e7ef8e9fd314d469bcf887050fb8"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/node-forge",
+      "name": "node-forge",
+      "version": "1.4.2",
+      "license": "(BSD-3-Clause OR GPL-2.0)",
+      "author": "Digital Bazaar, Inc.",
+      "repository": "https://github.com/digitalbazaar/forge",
+      "metadata_sha256": "1affd5b27cff146f9f909a3d1a2a1931623585ff2b343594557608031032f6d8",
+      "files": [
+        {
+          "path": "third_party/license-sources/node-forge/LICENSE",
+          "sha256": "f63ff0e4e239244aa79280da2dd4811a0469e5e201caf5cbc0d97c3a1dff8e82"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/node-machine-id",
+      "name": "node-machine-id",
+      "version": "1.1.12",
+      "license": "MIT",
+      "author": "Aleksandr Komlev",
+      "repository": "git@github.com:automation-stack/node-machine-id.git",
+      "metadata_sha256": "d4794942907ccbebd4fcf4a0bfe6f51ec031ffdaff3246301cc0b053fa5eb5a5",
+      "files": [
+        {
+          "path": "third_party/license-sources/node-machine-id/LICENSE",
+          "sha256": "e6466a9964b3281c7048b0f318f4d24113a8e01941fb5268da55741150c98851"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/open",
+      "name": "open",
+      "version": "11.0.4",
+      "license": "MIT",
+      "author": "Sindre Sorhus",
+      "repository": "sindresorhus/open",
+      "metadata_sha256": "c8535767011e4d2d483cbc9146ee75d9a8e2cdc2372b8b5ec5f42dcee809b86a",
+      "files": [
+        {
+          "path": "third_party/license-sources/open/license",
+          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/picocolors",
+      "name": "picocolors",
+      "version": "1.1.1",
+      "license": "ISC",
+      "author": "Alexey Raspopov",
+      "repository": "alexeyraspopov/picocolors",
+      "metadata_sha256": "ef2ac226c4811d312e12c64214c453878653e834482125ae475f27cea60de737",
+      "files": [
+        {
+          "path": "third_party/license-sources/picocolors/LICENSE",
+          "sha256": "6582629e2979466878f6014313dcc2f3756c9616148682227ce3063dde310750"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/playwright-core",
+      "name": "playwright-core",
+      "version": "1.64.1",
+      "license": "Apache-2.0",
+      "author": "Microsoft Corporation",
+      "repository": "git+https://github.com/microsoft/playwright.git",
+      "metadata_sha256": "8aa1c9863fa8dea324e674254158cdc79440f4124ef2d84d38053013541cb7d6",
+      "files": [
+        {
+          "path": "third_party/license-sources/playwright-core/LICENSE",
+          "sha256": "45873d00a0dd243596deb4aa23b2493b3d1f0671921bf2538ea431d7380220eb"
+        },
+        {
+          "path": "third_party/license-sources/playwright-core/NOTICE",
+          "sha256": "6d602191187b35b9b01d2cffa01c8469c2c8d9de8a96f1bf868e0f264f51c81d"
+        },
+        {
+          "path": "third_party/license-sources/playwright-core/ThirdPartyNotices.txt",
+          "sha256": "a549d329bad8806fe279f0ecae0fc0270dec7e7c2dc8ec10f90e394f7c32b144"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/powershell-utils",
+      "name": "powershell-utils",
+      "version": "0.2.1",
+      "license": "MIT",
+      "author": "Sindre Sorhus",
+      "repository": "sindresorhus/powershell-utils",
+      "metadata_sha256": "6b3fe84d5a0ac13ca76b03e5b90372e43a5997007a6299c21fb5c2362fa77e29",
+      "files": [
+        {
+          "path": "third_party/license-sources/powershell-utils/license",
+          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/react",
+      "name": "react",
+      "version": "19.2.4",
+      "license": "MIT",
+      "author": null,
+      "repository": "https://github.com/facebook/react.git",
+      "metadata_sha256": "e60b92f6031f023907bbfab8f96e63e44307776ec1488f310ba61d41b8cda8cc",
+      "files": [
+        {
+          "path": "third_party/license-sources/react/LICENSE",
+          "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/react-dom",
+      "name": "react-dom",
+      "version": "19.2.4",
+      "license": "MIT",
+      "author": null,
+      "repository": "https://github.com/facebook/react.git",
+      "metadata_sha256": "b8448092689c7e6191595a98526ced808288f35138d97fbce5801a94922e3c36",
+      "files": [
+        {
+          "path": "third_party/license-sources/react-dom/LICENSE",
+          "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/run-applescript",
+      "name": "run-applescript",
+      "version": "7.1.0",
+      "license": "MIT",
+      "author": "Sindre Sorhus",
+      "repository": "sindresorhus/run-applescript",
+      "metadata_sha256": "6b82907e9fcc0cdb36c40abdc2a9ca0dcd51a8799a668ecff05a0bcd37e0d8be",
+      "files": [
+        {
+          "path": "third_party/license-sources/run-applescript/license",
+          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/sharp",
+      "name": "sharp",
+      "version": "0.35.5",
+      "license": "Apache-2.0",
+      "author": "Lovell Fuller <npm@lovell.info>",
+      "repository": "git+https://github.com/lovell/sharp.git",
+      "metadata_sha256": "ad4a2535d72eb638053a38867b1abf43c328cd1c1dbae5cf4172d498365a8b97",
+      "files": [
+        {
+          "path": "third_party/license-sources/sharp/LICENSE",
+          "sha256": "73ba74dfaa520b49a401b5d21459a8523a146f3b7518a833eea5efa85130bf68"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/sharp/node_modules/semver",
+      "name": "semver",
+      "version": "7.8.5",
+      "license": "ISC",
+      "author": "GitHub Inc.",
+      "repository": "git+https://github.com/npm/node-semver.git",
+      "metadata_sha256": "7c94cb7f2a53c27b20d76386ec144c062894dbcc909cfabd0f728c37874b1776",
+      "files": [
+        {
+          "path": "third_party/license-sources/sharp/node_modules/semver/LICENSE",
+          "sha256": "4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/source-map-js",
+      "name": "source-map-js",
+      "version": "1.2.2",
+      "license": "BSD-3-Clause",
+      "author": "Valentin 7rulnik Semirulnik <v7rulnik@gmail.com>",
+      "repository": "7rulnik/source-map-js",
+      "metadata_sha256": "9f1ea63b1661d0f6e5fcd50b625d86cddd77de870a0019b23262360987b487f5",
+      "files": [
+        {
+          "path": "third_party/license-sources/source-map-js/LICENSE",
+          "sha256": "6cb0631f71c7749763fd3dd1d5bee52dd1070ec17f2edc1710079ad070bd2fbd"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/sql.js",
+      "name": "sql.js",
+      "version": "1.15.2",
+      "license": "MIT",
+      "author": null,
+      "repository": "http://github.com/sql-js/sql.js.git",
+      "metadata_sha256": "384c3c1048b0d35ee8f09bbf8dfac4d62cbba4cb7082e3f1c549254e4f124405",
+      "files": [
+        {
+          "path": "third_party/license-sources/sql.js/LICENSE",
+          "sha256": "60a3f6e4d7b29b4321359e683b36cf198d24f58e24582070f56e6fa89d5ee2be"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/styled-jsx",
+      "name": "styled-jsx",
+      "version": "5.1.6",
+      "license": "MIT",
+      "author": null,
+      "repository": "vercel/styled-jsx",
+      "metadata_sha256": "0a11b14d7bbeab650019db18883a14cb67daa3615f498a5a625d45828be7eef9",
+      "files": [
+        {
+          "path": "third_party/license-sources/styled-jsx/license.md",
+          "sha256": "24d4a4580df855c345705b3016404f0c9da7e7674dc3b21a3ce7d0e5d0c37e2d"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/wreq-js",
+      "name": "wreq-js",
+      "version": "3.2.0",
+      "license": "MIT",
+      "author": "Oleksandr Herasymov <herasymov7@icloud.com>",
+      "repository": "git+https://github.com/sqdshguy/wreq-js.git",
+      "metadata_sha256": "c863b4a56c53282ae5700a1fa64f8c40f2c0983824a1291bacc8eb4addb04462",
+      "files": [
+        {
+          "path": "third_party/license-sources/wreq-js/LICENSE",
+          "sha256": "f5e211eaa1c732f23cae866f00c7a0d9f458cbb6e37051170a3f7bb45c2e5d8e"
+        }
+      ]
+    },
+    {
+      "path": "node_modules/wsl-utils",
+      "name": "wsl-utils",
+      "version": "1.0.1",
+      "license": "MIT",
+      "author": "Sindre Sorhus",
+      "repository": "sindresorhus/wsl-utils",
+      "metadata_sha256": "78a281ad10faa7a3847ada4c5e391e08e5196ba4fb085b012b14535ec52a795b",
+      "files": [
+        {
+          "path": "third_party/license-sources/wsl-utils/license",
+          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+        }
+      ]
+    }
+  ]
+}
