@@ -193,4 +193,3 @@ describe("functionResponse `$ref` sanitization", () => {
     expect(frs[0].functionResponse.response.result._ref).toBe("#/$defs/Config");
   });
 });
-

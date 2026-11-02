@@ -6,6 +6,9 @@ AZO-969 supplied the build prerequisite on PR #17, based on PR #16
 AZO-950 completed PR17 offline requalification; the final results follow the
 historical failure/remediation record below. That evidence does **not** qualify
 an AZO-998 modification, a container image, master integration or production deployment.
+The later **AZO-1073 exact-head qualification and Criteria A3** section records
+PR19 results and the accepted three product divergences. Historical results
+below do not replace that checkpoint, qualify another head or clear release gates.
 
 ## Font source and behavior
 
@@ -240,8 +243,11 @@ Generated qualification lockfile SHA-256 values (not tracked in PR17):
 | Unmatched snapshots | 17 | 17 |
 
 All 38 common failure identities/messages match. The four candidate-only
-failures are three approved assistant-prefill policy conflicts and one
-`updatedAt` tie in DB reorder parity. Missing `lowdb` and the absent
+failures in this historical run are three classified assistant-prefill policy
+conflicts and one `updatedAt` tie in DB reorder parity. Classification at that
+time was not a criterion exception or release approval. The later Criteria A3
+decision is narrowly bound to the AZO-1073 evidence below, not a retroactive
+claim that this historical suite passed. Missing `lowdb` and the absent
 `cloud/src/handlers/embeddings.js` cause the two collection errors on each side;
 neither was installed, hidden or excluded to manufacture a green result.
 Node owning tests passed 18/18; migration/access tests passed 94/94. A combined
@@ -342,3 +348,93 @@ made. After AZO-1001 is accepted, AZO-999 must integrate from `master`, resolve
 the recorded conflicts and requalify that new integration head before release
 gates. PR17 and AZO-1001 results above must not be relabeled as evidence for
 that future tree.
+
+## AZO-1073 exact-head qualification and Criteria A3
+
+This later checkpoint supersedes earlier qualification **for its exact source
+only**; earlier failures and receipts above remain history. Upstream is pinned
+v0.5.112 `1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d`, fork baseline master
+`1f508bcfa7f2b0e76662be7aefd39d0087747aa5`, candidate PR19
+`b42ab96096c495c53cdd29a399804c73b422955b`.
+AZO-1073 report attachment: `01a199c4-d313-7414-85d7-0749d40064cc`.
+AZO-1079 edits documentation only; no target tests or build ran in that docs
+update. These results must not be relabeled as new-head passes.
+
+| AZO-1073 invocation | Exit | Pass | Fail | Skip | Todo | Limit |
+|---|---:|---:|---:|---:|---:|---|
+| Clean upstream full Vitest | 1 | 4238 | 30 | 98 | 1 | 4367 assertions; cloud collection failure separate |
+| Candidate full Vitest | 1 | 4557 | 27 | 98 | 1 | 4683 assertions; cloud collection failure separate |
+| Candidate contracts, 24 files | 0 | 303 | 0 | 0 | 0 | Separate invocation, not a substitute for upstream failures |
+| Candidate Node tests, 9 files | 0 | 43 | 0 | 0 | 0 | Mocks/source fixtures; not native musl/arm64 or OCI proof |
+| Clean upstream `npm run build` | 134 | — | — | — | — | Google-font resolution error marker; no compile/postbuild/output |
+| Candidate `npm run build` | 0 | — | — | — | — | Compile/postbuild, standalone server and BUILD_ID observed |
+
+Both full suites remain red. Comparison uses identities, not subtraction:
+24 common failed identities remain, exactly three common identities change
+PASS to FAIL, zero candidate-only failing identity among discovered assertions,
+and five same-identity golden header tests change FAIL to PASS. Candidate
+snapshots: 179 matched, zero unmatched/added; upstream: 162 matched, five
+unmatched, 12 added. Replacement of the upstream API-key source-string test by
+behavioral tests is not a same-identity fix.
+`unit/embeddings.cloud.test.js` fails collection on both trees because the cloud
+worker is absent: zero collected assertions, not a pass. The 98 skips and one
+todo remain visible, including five skipped DB benchmark cases. No retired
+Responses/SSE response-conversion path is replayed for the reasoning todo.
+
+Three earlier Node harness attempts remain charged: missing `.git` mountpoint
+(exit1, target start unproved), missing `/dev/null` (28 pass/15 fail), then
+read-only null O_RDWR denial (28 pass/15 fail). Terminal 43/43 uses a read-only
+source Git fixture and scratch regular-file null emulation, not a native null
+device. No test was changed to repair that harness. All candidate build output
+was destroyed with scratch: **no retained immutable release artifact**.
+
+### A3 accepts product divergence, not upstream compatibility
+
+Requester/principal chose AZO-1078 option 1 at
+`01a199fd-efe4-70b1-8693-12e56e980f38`, 2026-11-02T02:01:58Z;
+record attachment `01a199f7-2fe4-745e-b28b-acd232e6c81c`.
+Goal AZO-904 Criteria A3 accepts only these three failures as AZOX product
+divergences in criterion 3:
+
+| Unchanged upstream assertion | Disposition |
+|---|---|
+| `tests/unit/claude-trailing-user-turn-source-formats.test.js:18` (Gemini terminal model) | PASS upstream / FAIL candidate |
+| Same file `:29` (Responses terminal assistant) | PASS upstream / FAIL candidate |
+| `tests/unit/claude-trailing-user-turn.test.js:66` (intentional native Claude prefill) | PASS upstream / FAIL candidate; line67 not executed after line66 fails |
+
+Upstream expects default roles `[user, assistant]`; AZOX preserves assistant
+history and appends continuation, yielding `[user, assistant, user]`. Explicit
+`x-9router-assistant-prefill: preserve` changes the input and cannot prove
+default compatibility. All assertions and failures stay unchanged; separate
+AZOX preserve coverage does not make native line67 pass. Earlier technical
+classification alone was not approval. A3 is not a test waiver or release
+approval, and grants no Git/merge/tag/image/deploy/Result authority.
+
+Reuse A3 only within this Goal when fresh qualification and exact-head review
+prove the same three assertions/default behavior and cause unchanged. Different
+failures or changed behavior require the proper gate. C1 rights, budgets,
+counters and all other criteria remain unchanged; no new target reservation
+was made for AZO-1079 documentation validation.
+
+### Remaining release work
+
+AZO-1075 exact-head self-review (`independent_review: false`), report attachment
+`01a199fe-5009-7588-97ca-69e0809e1c28`, remains **remediate**, not release
+acceptance. A3 resolves only its narrow product requirement boundary.
+
+- Close dependency advisory and actual shipped license/notice review: libvips
+  LGPL, sharp mixed notices, MPL/CC-BY/dual licenses, noble-hashes attribution,
+  Alpine/ffmpeg and actual image SBOM. Lock metadata alone does not clear these.
+- Preserve native line67, cloud collection, skip/todo gaps; obtain separate
+  native musl/arm64 and OCI runtime evidence when authorized.
+- Retain an immutable artifact with exact source/image provenance only after
+  qualification/security gates. No image was built/run/pushed by these checks.
+- Resolve inherited master-to-candidate whitespace at
+  `tests/unit/gemini-contents-normalization.test.js:196` (new blank line at EOF),
+  as a separate source output; docs-only changes do not fix it.
+- Qualify and review changed heads with counters reserved before target launch;
+  never copy b42 results as new-head PASS. Honor repository linear history and
+  enforced checks; empty PR checks are not CI passed.
+- Before rollout, separately meet isolated migration/backup/rollback,
+  direct/LiteLLM smoke and exact live identity conditions. No release, deploy
+  or Result is authorized by AZO-1079.

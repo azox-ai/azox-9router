@@ -8,6 +8,56 @@
   },
   "fork_baseline": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
   "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry plus AZO-945 Portal access-token-only credential sync plus AZO-969 self-hosted Inter, compressed production webpack cache, native production webpack hashing and bounded tracing reads. AZO-950 completed offline qualification of PR17; its full suite remains red against the documented upstream baseline. AZO-998 aligns both package versions with the proposed v0.5.112-azox.1 tag; no tag is created. AZO-1001 pins the official Node base image digest, commits the qualified root lock and locks the Docker recipe; local candidate qualification is recorded under azo_1001_checkpoint. AZO-999 reconciles the qualified candidate with the pinned fork baseline, carrying narrow telemetry, OAuth transport, error-body bounds and standalone/SQL.js integrity seams. No image was built or run. Integration qualification is recorded in azo_999_checkpoint; it does not authorize merge into master or release.",
+  "azo_1073_checkpoint": {
+    "task": "AZO-1073",
+    "qualified_candidate": "b42ab96096c495c53cdd29a399804c73b422955b",
+    "upstream": "1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d",
+    "base": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
+    "report_attachment": "01a199c4-d313-7414-85d7-0749d40064cc",
+    "full_suite": {
+      "upstream": { "exit": 1, "total": 4367, "passed": 4238, "failed": 30, "skipped": 98, "todo": 1 },
+      "candidate": { "exit": 1, "total": 4683, "passed": 4557, "failed": 27, "skipped": 98, "todo": 1 },
+      "collection_gap": "unit/embeddings.cloud.test.js fails collection on both trees: cloud worker absent, zero collected assertions. Collection failure is separate from assertion totals; skipped/todo are not passes.",
+      "identity_comparison": "Three common PASS-to-FAIL prefill identities; 24 common failed identities; zero candidate-only failing identity among discovered assertions; five same-identity golden headers FAIL-to-PASS. Candidate snapshots: 179 matched, zero unmatched/added; upstream: 162 matched, five unmatched, 12 added. Upstream old API-key source-string assertion replaced by candidate behavioral tests is not a same-identity fix."
+    },
+    "contracts": { "exit": 0, "files": 24, "passed": 303, "failed": 0 },
+    "node_tests": { "exit": 0, "files": 9, "passed": 43, "failed": 0, "limit": "Mocks/source fixtures; terminal harness uses scratch regular-file null emulation, not a native null device or OCI/musl/arm64 runtime proof. Three earlier charged harness attempts remain recorded, including two 28-pass/15-fail results." },
+    "build": { "upstream_exit": 134, "candidate_exit": 0, "upstream_limit": "Google-font resolution error marker; no compile/postbuild/output.", "candidate_result": "Compile, postbuild, standalone server and BUILD_ID observed; output destroyed with scratch, no retained immutable release artifact." },
+    "native_prefill_coverage": "tests/unit/claude-trailing-user-turn.test.js:67 not executed after line66 failure; separate AZOX preserve tests do not make that upstream assertion pass.",
+    "evidence_binding": "AZO-1079 updates documentation only. These are inherited AZO-1073 results for the exact candidate above, not fresh tests of changed documentation or a future head. Historical checkpoints below remain historical; no test was edited, removed, skipped or waived."
+  },
+  "criteria_a3": {
+    "goal": "AZO-904",
+    "version": "Criteria A3",
+    "decision": "AZO-1078 option 1, authenticated requester/principal comment 01a199fd-efe4-70b1-8693-12e56e980f38, 2026-11-02T02:01:58Z",
+    "record_attachment": "01a199f7-2fe4-745e-b28b-acd232e6c81c",
+    "grant_id": "AZO-904-A3-PREFILL-DIVERGENCE",
+    "accepted_product_divergences": [
+      "tests/unit/claude-trailing-user-turn-source-formats.test.js:18 (Gemini terminal model)",
+      "tests/unit/claude-trailing-user-turn-source-formats.test.js:29 (Responses terminal assistant)",
+      "tests/unit/claude-trailing-user-turn.test.js:66 (intentional native Claude prefill)"
+    ],
+    "semantics": "Upstream default expects [user, assistant]; AZOX preserves assistant history and appends user continuation, producing [user, assistant, user]. Explicit preserve opts out but changes input, so it is not default upstream compatibility.",
+    "boundary": "Only these three failures are accepted product divergences in criterion3, not upstream compatibility PASS or a green full suite. Keep assertions/failures unchanged; native line67 remains unexecuted. Earlier classification was not release approval. No retired Responses/SSE response conversion is restored.",
+    "future_head_reuse": "Only within this Goal, after fresh qualification and review prove the same three assertions/default behavior and cause unchanged. Different failures or changed behavior require the correct gate; old-head passes cannot qualify a new head.",
+    "authority_limit": "A3 does not grant Git, merge, tag, image, deploy or Result authority; immutable C1 rights, budget/counters, all other criteria and release gates remain unchanged."
+  },
+  "release_readiness": {
+    "review_task": "AZO-1075",
+    "reviewed_head": "b42ab96096c495c53cdd29a399804c73b422955b",
+    "report_attachment": "01a199fe-5009-7588-97ca-69e0809e1c28",
+    "verdict": "remediate",
+    "independent_review": false,
+    "immutable_artifact_retained": false,
+    "remaining_gaps": [
+      "Dependency advisory data/scan and actual shipped license/notice closure: libvips LGPL, sharp mixed notices, MPL/CC-BY/dual licenses, noble-hashes attribution and Alpine/ffmpeg/SBOM.",
+      "Native prefill line67 unexecuted; cloud collection gap, 98 skipped and one todo retained. Node source fixtures do not qualify native musl/arm64 or OCI runtime.",
+      "No retained immutable release artifact or image provenance/architecture/runtime proof.",
+      "master-to-candidate diff check exits2 at tests/unit/gemini-contents-normalization.test.js:196 (new blank line at EOF); source cleanup belongs to a subsequent output.",
+      "Changed head needs appropriately reserved qualification and fresh exact-head security/release review; A3 reuse requires evidence of unchanged identities/behavior.",
+      "Repository linear-history/check gates, isolated migration/backup/rollback and direct/LiteLLM rollout proof remain required; no release/deploy/Result from AZO-1079."
+    ]
+  },
   "build_reproducibility": {
     "task": "AZO-969",
     "classification": "carry",
@@ -90,7 +140,7 @@
       },
       "tests": ["tests/unit/azox-prefill-cache.test.js", "tests/unit/azox-prefill-fallback.test.js", "tests/unit/azox-prefill-passthrough.test.js"],
       "evidence": "AZO-917: 10 initial behavioral RED cases, additional reasoning-history RED; expanded clean-upstream replay 14 failed/11 passed, candidate 25/25 GREEN. Baseline account/combo behavior needed no production patch.",
-      "upstream_expectation_conflicts": "Three original upstream assertions require unconditional assistant-prefill preservation. Kept unchanged and reported as known contract conflicts, not a green upstream suite."
+      "upstream_expectation_conflicts": "Exactly three upstream PASS-to-FAIL assertions are accepted product divergences under Criteria A3/AZO-1078 option1; see criteria_a3 for identities, provenance and reuse conditions. All remain FAIL, tests unchanged, not upstream compatibility PASS or release approval; native line67 remains unexecuted."
     },
     "claude_cache": {
       "classification": "carry",
