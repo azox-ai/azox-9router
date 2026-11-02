@@ -1,0 +1,4 @@
+# Verbatim third-party license texts: preserve upstream bytes, including trailing whitespace.
+THIRD_PARTY_NOTICES.md -whitespace
+third_party/license-sources/** -whitespace
+third_party/licenses/** -whitespace
