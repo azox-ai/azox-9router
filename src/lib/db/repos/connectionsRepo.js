@@ -11,6 +11,13 @@ const OPTIONAL_FIELDS = [
 ];
 
 const MODEL_LOCK_PREFIX = "modelLock_";
+const PORTAL_DELETION_SCOPE = "portalDeletedExternalIds";
+
+function withoutPortalIdentity(data) {
+  if (!data.providerSpecificData || typeof data.providerSpecificData !== "object") return data;
+  const { portalExternalId, portalTokenVersion, ...providerSpecificData } = data.providerSpecificData;
+  return { ...data, providerSpecificData };
+}
 
 function resetHealthStateOnActivation(existing, patch) {
   if (patch?.testStatus !== "active") return patch;
@@ -108,7 +115,15 @@ export async function getProviderConnectionById(id) {
   return rowToConn(row);
 }
 
-// Internal sync reorder — must be called INSIDE a transaction
+// Internal sync reorder — must be called INSIDE a transaction.
+//
+// Normalizes priorities to a contiguous 1..N after a DELETE or an explicit
+// reorder, so gaps don't accumulate over time.
+//
+// Deliberately NOT called on insert: a new connection already gets
+// MAX(priority)+1, which sorts after every existing row, so the order is
+// identical with or without the rewrite. Skipping it there is what makes
+// import O(1) per key instead of O(pool) — see createProviderConnection.
 function reorderInTx(db, providerId) {
   const list = db.all(`SELECT * FROM providerConnections WHERE provider = ?`, [providerId]).map(rowToConn);
   list.sort((a, b) => {
@@ -117,23 +132,27 @@ function reorderInTx(db, providerId) {
     return new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
   });
   list.forEach((c, i) => {
-    db.run(`UPDATE providerConnections SET priority = ? WHERE id = ?`, [i + 1, c.id]);
+    const want = i + 1;
+    if ((c.priority || 0) !== want) {
+      db.run(`UPDATE providerConnections SET priority = ? WHERE id = ?`, [want, c.id]);
+    }
   });
 }
 
-/**
- * Create or update a provider connection using an existing synchronous DB
- * transaction. Callers own the surrounding transaction boundary.
- *
- * This is intentionally exported for cross-record commits (for example, a
- * one-time contributor invite and the credential it authorizes). Keeping the
- * connection write in the same transaction prevents authorization revocation
- * from interleaving between validation and persistence.
- */
-export function createProviderConnectionInTransaction(db, data, { deduplicate = true } = {}) {
+export function createProviderConnectionInTransaction(db, data, { deduplicate = true, portalSync = false } = {}) {
+  data = portalSync ? data : withoutPortalIdentity(data);
   const now = new Date().toISOString();
 
-  const all = db.all(`SELECT * FROM providerConnections WHERE provider = ?`, [data.provider]).map(rowToConn);
+  const isApikey = data.authType === "apikey" && !!data.name;
+  const all = isApikey
+    ? db.all(
+        `SELECT * FROM providerConnections WHERE provider = ? AND authType = ? AND name = ?`,
+        [data.provider, "apikey", data.name]
+      ).map(rowToConn)
+    : db.all(`SELECT * FROM providerConnections WHERE provider = ?`, [data.provider]).map(rowToConn);
+  const poolSize = isApikey
+    ? db.get(`SELECT COUNT(*) AS n FROM providerConnections WHERE provider = ?`, [data.provider])?.n ?? all.length
+    : all.length;
 
   let existing = null;
   if (deduplicate && data.authType === "oauth" && data.email) {
@@ -178,6 +197,16 @@ export function createProviderConnectionInTransaction(db, data, { deduplicate = 
   // access_token: never dedup — user manages duplicates manually
 
   if (existing) {
+    if (data.allowOverwrite === false) {
+      const err = new Error(
+        `A connection named "${existing.name}" already exists for provider "${data.provider}". ` +
+        `Pass allowOverwrite: true to replace it.`
+      );
+      err.code = "PROVIDER_NAME_CONFLICT";
+      err.existingId = existing.id;
+      err.existingName = existing.name;
+      throw err;
+    }
     const normalized = resetHealthStateOnActivation(existing, data);
     const merged = { ...existing, ...normalized, updatedAt: now };
     upsert(db, merged);
@@ -186,11 +215,12 @@ export function createProviderConnectionInTransaction(db, data, { deduplicate = 
 
   let connectionName = data.name || null;
   if (!connectionName && (data.authType === "oauth" || data.authType === "access_token")) {
-    connectionName = deriveConnectionName(data, data.email || `Account ${all.length + 1}`);
+    connectionName = deriveConnectionName(data, data.email || `Account ${poolSize + 1}`);
   }
   let connectionPriority = data.priority;
   if (!connectionPriority) {
-    connectionPriority = all.reduce((m, c) => Math.max(m, c.priority || 0), 0) + 1;
+    const maxRow = db.get(`SELECT MAX(priority) AS m FROM providerConnections WHERE provider = ?`, [data.provider]);
+    connectionPriority = (maxRow?.m || 0) + 1;
   }
 
   const conn = {
@@ -212,21 +242,135 @@ export function createProviderConnectionInTransaction(db, data, { deduplicate = 
   if (data.email !== undefined) conn.email = data.email;
 
   upsert(db, conn);
-  reorderInTx(db, data.provider);
   return conn;
 }
 
 export async function createProviderConnection(data, options = {}) {
+  data = withoutPortalIdentity(data);
   const db = await getAdapter();
-  if (options?.shouldCommit && !options.shouldCommit()) return null;
+  if (options.shouldCommit && !options.shouldCommit()) return null;
+  const now = new Date().toISOString();
   let result;
 
   db.transaction(() => {
-    if (options?.shouldCommit && !options.shouldCommit()) {
-      result = null;
+    if (options.shouldCommit && !options.shouldCommit()) { result = null; return; }
+    // apikey connections are deduped by name and need only the current max
+    // priority, so query for those directly instead of loading the whole pool
+    // (O(pool) per key — the other half of the import cost in #4311). The oauth
+    // branch below still scans, because its identity rules compare fields
+    // inside providerSpecificData and have no single-column equivalent.
+    const isApikey = data.authType === "apikey" && !!data.name;
+    const all = isApikey
+      ? db.all(
+          `SELECT * FROM providerConnections WHERE provider = ? AND authType = ? AND name = ?`,
+          [data.provider, "apikey", data.name]
+        ).map(rowToConn)
+      : db.all(`SELECT * FROM providerConnections WHERE provider = ?`, [data.provider]).map(rowToConn);
+    const poolSize = isApikey
+      ? db.get(`SELECT COUNT(*) AS n FROM providerConnections WHERE provider = ?`, [data.provider])?.n ?? all.length
+      : all.length;
+
+    let existing = null;
+    if (data.authType === "oauth" && data.email) {
+      const incomingUsername = data.providerSpecificData?.username;
+      const incomingWs = data.providerSpecificData?.chatgptAccountId;
+      existing = all.find(c => {
+        if (c.authType !== "oauth" || c.email !== data.email) return false;
+        if (c.providerSpecificData?.portalExternalId) return false;
+
+        // Codex/OpenAI can issue multiple OAuth grants for the same email.
+        // Refresh tokens are rotated single-use; collapsing a new login onto an
+        // existing bare-email row overwrites the first account's token pair and
+        // makes it look "invalid" after adding a second account. Only update an
+        // existing Codex row when both rows expose the same ChatGPT account ID.
+        if (data.provider === "codex") {
+          const existingWs = c.providerSpecificData?.chatgptAccountId;
+          return !!incomingWs && !!existingWs && incomingWs === existingWs;
+        }
+
+        // Workspace providers use workspace ID when both sides have it
+        const existingWs = c.providerSpecificData?.chatgptAccountId;
+        if (incomingWs && existingWs) return incomingWs === existingWs;
+        if (incomingWs && !existingWs) return false;
+        if (!incomingWs && existingWs) return false;
+        // Non-workspace providers: match on (email + username) so cross-IdP
+        // accounts don't overwrite each other. Require username on both sides
+        // — if only one side has it, treat as a distinct identity rather than
+        // collapsing onto the bare-email fallback (which would re-introduce
+        // the cross-IdP overwrite).
+        const existingUsername = c.providerSpecificData?.username;
+        if (incomingUsername && existingUsername) {
+          return incomingUsername === existingUsername;
+        }
+        if (incomingUsername || existingUsername) return false;
+        return true;
+      });
+    } else if (data.authType === "apikey" && data.name) {
+      existing = all.find(c => c.authType === "apikey" && c.name === data.name);
+    }
+    // access_token: never dedup — user manages duplicates manually
+
+    if (existing) {
+      // Name collision on an apikey connection used to silently replace the
+      // stored apiKey, so a script that reused names ("Key 1", "Key 2", …)
+      // destroyed existing pool entries with no 409 and no warning. Callers that
+      // genuinely mean "update this one" pass allowOverwrite; everyone else gets
+      // a typed error naming the row that would have been replaced. #4311
+      if (data.allowOverwrite === false) {
+        const err = new Error(
+          `A connection named "${existing.name}" already exists for provider "${data.provider}". ` +
+          `Pass allowOverwrite: true to replace it.`
+        );
+        err.code = "PROVIDER_NAME_CONFLICT";
+        err.existingId = existing.id;
+        err.existingName = existing.name;
+        throw err;
+      }
+      const normalized = resetHealthStateOnActivation(existing, data);
+      const merged = { ...existing, ...normalized, updatedAt: now };
+      upsert(db, merged);
+      result = merged;
       return;
     }
-    result = createProviderConnectionInTransaction(db, data, options);
+
+    let connectionName = data.name || null;
+    if (!connectionName && (data.authType === "oauth" || data.authType === "access_token")) {
+      connectionName = deriveConnectionName(data, data.email || `Account ${poolSize + 1}`);
+    }
+    let connectionPriority = data.priority;
+    if (!connectionPriority) {
+      // MAX(priority)+1 in SQL rather than a reduce over the loaded pool: the
+      // apikey path no longer has the whole pool in memory, and the aggregate
+      // is served by the index instead of a row scan. #4311
+      const maxRow = db.get(`SELECT MAX(priority) AS m FROM providerConnections WHERE provider = ?`, [data.provider]);
+      connectionPriority = (maxRow?.m || 0) + 1;
+    }
+
+    const conn = {
+      id: uuidv4(),
+      provider: data.provider,
+      authType: data.authType || "oauth",
+      name: connectionName,
+      priority: connectionPriority,
+      isActive: data.isActive !== undefined ? data.isActive : true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    for (const f of OPTIONAL_FIELDS) {
+      if (data[f] !== undefined && data[f] !== null) conn[f] = data[f];
+    }
+    if (data.providerSpecificData && Object.keys(data.providerSpecificData).length > 0) {
+      conn.providerSpecificData = data.providerSpecificData;
+    }
+    if (data.email !== undefined) conn.email = data.email;
+
+    upsert(db, conn);
+    // No reorderInTx here. `conn.priority` is already MAX(priority)+1, so the
+    // row sorts last and the resulting order is what reorderInTx would have
+    // produced anyway. The rewrite cost ~2N statements per insert — O(pool) —
+    // which made a 5k-key import O(n*m): ~25M statements at a 5k pool, and it
+    // serialized every parallel writer on the same transaction. #4311
+    result = conn;
   });
 
   return result;
@@ -235,43 +379,54 @@ export async function createProviderConnection(data, options = {}) {
 // Critical: OAuth refresh token race — atomic merge inside transaction
 export async function updateProviderConnection(id, data, options = {}) {
   const db = await getAdapter();
-  const signal = options?.signal || null;
-  if (signal?.aborted) {
-    throw signal.reason ?? new DOMException("Request aborted", "AbortError");
-  }
-  if (options?.shouldCommit && !options.shouldCommit()) return null;
-  options?.beforeCommit?.();
-  if (options?.shouldCommit && !options.shouldCommit()) return null;
+  if (options.signal?.aborted) throw options.signal.reason ?? new DOMException("Request aborted", "AbortError");
+  if (options.shouldCommit && !options.shouldCommit()) return null;
+  options.beforeCommit?.();
+  if (options.shouldCommit && !options.shouldCommit()) return null;
   let result;
-  // There is deliberately no await between the abort guard and the
-  // synchronous transaction: once this stack enters the commit, cancellation
-  // cannot interleave and turn an abandoned routing decision into a DB write.
   db.transaction(() => {
+    if (options.signal?.aborted) throw options.signal.reason ?? new DOMException("Request aborted", "AbortError");
+    if (options.shouldCommit && !options.shouldCommit()) { result = null; return; }
     const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
+    const portalId = existing.providerSpecificData?.portalExternalId;
+    if (portalId && options.expectedPortalTokenVersion !== undefined &&
+        existing.providerSpecificData.portalTokenVersion !== options.expectedPortalTokenVersion) {
+      result = null;
+      return;
+    }
     const normalized = resetHealthStateOnActivation(existing, data);
-    const merged = { ...existing, ...normalized, updatedAt: new Date().toISOString() };
+    const guarded = portalId ? {
+      ...normalized,
+      accessToken: existing.accessToken,
+      expiresAt: existing.expiresAt,
+      refreshToken: undefined,
+      providerSpecificData: {
+        ...(normalized.providerSpecificData || {}),
+        ...existing.providerSpecificData,
+        portalExternalId: portalId,
+        portalTokenVersion: existing.providerSpecificData.portalTokenVersion,
+      },
+    } : normalized;
+    const merged = { ...existing, ...guarded, updatedAt: new Date().toISOString() };
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;
   });
-  // Publish ordering metadata only after the synchronous transaction commits.
-  // A failed SQLite transaction must not leave an in-memory watermark for a
-  // state change that never reached durable storage.
-  if (result !== null && result !== undefined) options?.afterCommit?.(result);
+  if (result) options.afterCommit?.(result);
   return result;
 }
 
-/**
- * Compare-and-swap a Portal-managed credential inside one synchronous DB
- * transaction. Portal identity is portalExternalId, never provider/email.
- */
 export async function upsertPortalManagedConnection(externalId, tokenVersion, provider, buildValues) {
   const db = await getAdapter();
   let outcome;
 
   db.transaction(() => {
+    if (db.get(`SELECT value FROM kv WHERE scope = ? AND key = ?`, [PORTAL_DELETION_SCOPE, externalId])) {
+      outcome = { status: "deleted" };
+      return;
+    }
     const rows = db.all(`SELECT * FROM providerConnections`);
     const existing = rows.map(rowToConn).find((connection) =>
       connection.providerSpecificData?.portalExternalId === externalId
@@ -311,7 +466,7 @@ export async function upsertPortalManagedConnection(externalId, tokenVersion, pr
       // any stale value inherited from an older or incorrectly-classified row.
       const merged = {
         ...existing,
-        ...values,
+        ...resetHealthStateOnActivation(existing, values),
         refreshToken: undefined,
         updatedAt: new Date().toISOString(),
       };
@@ -320,19 +475,53 @@ export async function upsertPortalManagedConnection(externalId, tokenVersion, pr
       return;
     }
 
-    const connection = createProviderConnectionInTransaction(db, values, { deduplicate: false });
+    const connection = createProviderConnectionInTransaction(db, values, { deduplicate: false, portalSync: true });
     outcome = { status: "created", connection, tokenVersion };
   });
 
   return outcome;
 }
 
+export async function deletePortalManagedConnection(externalId) {
+  const db = await getAdapter();
+  let deleted = false;
+  db.transaction(() => {
+    // The Portal owns this identity forever. Tombstone and row deletion share
+    // one transaction so an in-flight PUT cannot recreate a revoked credential.
+    db.run(
+      `INSERT INTO kv(scope, key, value) VALUES(?, ?, 'deleted')
+       ON CONFLICT(scope, key) DO NOTHING`,
+      [PORTAL_DELETION_SCOPE, externalId]
+    );
+    const connections = db.all(`SELECT * FROM providerConnections`).map(rowToConn).filter((row) =>
+      row.providerSpecificData?.portalExternalId === externalId
+    );
+    if (connections.length === 0) return;
+    for (const connection of connections) {
+      db.run(`DELETE FROM providerConnections WHERE id = ?`, [connection.id]);
+    }
+    for (const provider of new Set(connections.map((connection) => connection.provider))) {
+      reorderInTx(db, provider);
+    }
+    deleted = true;
+  });
+  return deleted;
+}
+
 export async function deleteProviderConnection(id) {
   const db = await getAdapter();
   let ok = false;
   db.transaction(() => {
-    const row = db.get(`SELECT provider FROM providerConnections WHERE id = ?`, [id]);
+    const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
     if (!row) return;
+    const externalId = rowToConn(row).providerSpecificData?.portalExternalId;
+    if (externalId) {
+      db.run(
+        `INSERT INTO kv(scope, key, value) VALUES(?, ?, 'deleted')
+         ON CONFLICT(scope, key) DO NOTHING`,
+        [PORTAL_DELETION_SCOPE, externalId]
+      );
+    }
     db.run(`DELETE FROM providerConnections WHERE id = ?`, [id]);
     reorderInTx(db, row.provider);
     ok = true;
@@ -342,9 +531,22 @@ export async function deleteProviderConnection(id) {
 
 export async function deleteProviderConnectionsByProvider(providerId) {
   const db = await getAdapter();
-  const before = db.get(`SELECT COUNT(*) AS n FROM providerConnections WHERE provider = ?`, [providerId]);
-  db.run(`DELETE FROM providerConnections WHERE provider = ?`, [providerId]);
-  return before?.n || 0;
+  let count = 0;
+  db.transaction(() => {
+    const rows = db.all(`SELECT * FROM providerConnections WHERE provider = ?`, [providerId]);
+    for (const row of rows) {
+      const externalId = rowToConn(row).providerSpecificData?.portalExternalId;
+      if (!externalId) continue;
+      db.run(
+        `INSERT INTO kv(scope, key, value) VALUES(?, ?, 'deleted')
+         ON CONFLICT(scope, key) DO NOTHING`,
+        [PORTAL_DELETION_SCOPE, externalId]
+      );
+    }
+    db.run(`DELETE FROM providerConnections WHERE provider = ?`, [providerId]);
+    count = rows.length;
+  });
+  return count;
 }
 
 export async function reorderProviderConnections(providerId) {

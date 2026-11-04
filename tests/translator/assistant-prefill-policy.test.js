@@ -101,12 +101,12 @@ describe.each(paths)("assistant prefill policy — %s", (_name, run) => {
     expect(out.messages).toHaveLength(3);
     expect(out.messages.at(-1)).toEqual({
       role: "user",
-      content: [{
+      content: [expect.objectContaining({
         type: "tool_result",
         tool_use_id: "tool-1",
         is_error: true,
         content: expect.stringMatching(/not completed/i),
-      }],
+      })],
     });
   });
 

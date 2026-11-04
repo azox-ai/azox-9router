@@ -3,21 +3,21 @@
   "format_note": "JSON-compatible YAML; parsed with Node.js JSON.parse to avoid a runtime dependency.",
   "upstream": {
     "repository": "https://github.com/decolua/9router",
-    "ref": "v0.5.86",
-    "sha": "39e36d3d0c849e0e01dfeacddf111edf892448fc"
+    "ref": "v0.5.95",
+    "sha": "a99cf57239ff778b61e434c2786009d5ed1c412c"
   },
   "reset": {
-    "date": "2026-09-26",
-    "branch": "agent/manager/eaedb78c17a6",
-    "baseline": "The branch starts directly at upstream v0.5.86 SHA 39e36d3d and reapplies only behavior contracts that the upstream qualification suite still lacks.",
+    "date": "2026-10-04",
+    "branch": "yolo/9router-v0.5.95",
+    "baseline": "This branch starts at upstream v0.5.95 SHA a99cf57239ff778b61e434c2786009d5ed1c412c. Azox regression tests were run against clean upstream before the v0.5.91 Azox overlay was adapted to the new release.",
     "diff_counts": {
-      "additive": 41,
-      "modified": 35,
-      "total": 76,
-      "verify": "git diff --name-status v0.5.86 HEAD | awk '{print $1}' | sort | uniq -c"
+      "additive": 45,
+      "modified": 39,
+      "total": 84,
+      "verify": "git diff --name-status v0.5.95 HEAD | cut -f1 | sort | uniq -c"
     },
     "retired_old_fork_paths": 275,
-    "note": "Upstream-first contract-preserving overlay. Pure v0.5.86 failed all five sampled Azox contract suites because the downstream capabilities were absent. The overlay ports only those missing contracts and keeps upstream v0.5.86 provider/auth fixes. open-sse/providers/capabilities.js was retired from the overlay because upstream absorbed the provider-aware modality lookup and globalThis catalog source seam."
+    "note": "Upstream-first v0.5.95 overlay preserves the four Azox behavior contracts and gateway monitoring. No retired conversion paths or already absorbed provider capability fixes are replayed. The prior v0.5.91 candidate has not been merged into fork master; this branch integrates its surviving tests and overlay while retaining upstream v0.5.95 routing, model, and OAuth changes."
   },
   "supported_customizations": {
     "claude_assistant_prefill": {
@@ -94,7 +94,10 @@
         "src/lib/auth/portalSync.js"
       ],
       "tests": [
-        "tests/unit/portal-sync-route.test.js"
+        "tests/unit/portal-sync-route.test.js",
+        "tests/unit/portal-sync-atomic.test.js",
+        "tests/unit/chat-account-mutation-order.test.js",
+        "tests/unit/streaming-html-account-health.test.js"
       ],
       "required_upgrade_checks": [
         "Preserve access-token-only writes and explicitly remove any stale stored refreshToken on update.",
@@ -109,12 +112,13 @@
   "retained_dependency_closure": {
     "request_and_runtime_helpers": [
       "open-sse/config/runtimeConfig.js",
-      "open-sse/providers/capabilities.js",
       "open-sse/services/modelCatalogResponse.js",
       "open-sse/translator/concerns/hostedToolPolicy.js",
       "open-sse/translator/schema/blocks.js",
       "open-sse/utils/abort.js",
-      "open-sse/utils/requestBody.js"
+      "open-sse/utils/requestBody.js",
+      "src/sse/handlers/chat.js",
+      "src/sse/utils/gatewayMonitoring.js"
     ],
     "oauth_and_connection_atomicity": [
       "src/app/api/oauth/[provider]/[action]/route.js",
@@ -125,7 +129,9 @@
       "src/lib/oauth/services/qoder.js",
       "src/lib/oauth/utils/server.js",
       "src/lib/oauth/utils/xaiHttp.js",
-      "src/shared/utils/apiKey.js"
+      "src/shared/utils/apiKey.js",
+      "src/lib/contributor/supportedProviders.js",
+      "open-sse/shared/zedAuth.js"
     ],
     "database_integrity": [
       "src/lib/db/adapters/sqljsAdapter.js",
@@ -142,16 +148,16 @@
     "rationale": "These files are retained because the supported features import their symbols or rely on their atomicity, bounded-request, OAuth-origin, database, or standalone-image contracts. Several are whole-file carryovers and therefore include hardening beyond the three user-facing customizations; they must remain regression-tested and are candidates for later surgical reduction."
   },
   "verification": {
-    "pure_upstream_full_suite": "36 files failed; 95 tests failed; 2,569 passed; 14 expected failures; 59 skipped.",
-    "overlay_full_suite": "After review fixes: 39 files failed; 95 tests failed; 2,778 passed; 14 expected failures; 59 skipped (295 files / 2,946 tests). Pure upstream baseline: 36 files failed; 95 tests failed; 2,569 passed; 14 expected failures; 59 skipped (277 files / 2,737 tests). Failure count unchanged; baseline assertion identities require comparison before ready-for-merge.",
-    "azox_contract_suite": "11 files / 190 tests passed.",
-    "oauth_zed_conflict_suite": "5 files / 92 tests passed after resolving upstream Zed versus contributor ownership semantics.",
-    "gateway_monitoring": "node --test tests/unit/gateway-monitoring.test.js: 2 passed.",
-    "live_production": "Not run. No deployment performed.",
-    "live_claude_prefill": "Not run in this upgrade checkout.",
-    "review_focused_suite": "10 files / 159 tests passed (OAuth, Portal, contributor, combo, Claude translator); gateway monitoring node --test 2 passed.",
-    "build": "npm run build and standalone asset copy passed after review fixes.",
-    "security_review": "Pending: credential/auth changes need review before merge."
+    "pure_upstream_full_suite": "Pristine upstream v0.5.95: 328 files, 39 failed / 273 passed / 16 skipped; 100 assertion failures, 2,945 passed, 14 expected failures, 98 skipped, 1 todo. The suite remains red on upstream alone. Azox contract tests applied to upstream production code: 19 files failed, 58 assertions or collections failed, 15 passed (73 tests).",
+    "overlay_full_suite": "Candidate v0.5.95 overlay: 347 files, 41 failed / 290 passed / 16 skipped; 103 assertion failures, 3,178 passed, 14 expected failures, 98 skipped, 1 todo (3,394 tests). Comparing exact failing test identities with pristine upstream: six candidate-only failures are upstream tests assuming an unchanged Claude assistant-prefill or system-cache policy; three upstream database concurrency failures resolved. These six differences remain visible and require explicit review; do not label the raw full suite green.",
+    "azox_contract_suite": "19 selected contract files, 217 tests passed, 0 failed on candidate after sanitized OAuth fatal-poll fix. On clean upstream, the same selected suites had 58 failures and 15 passes.",
+    "oauth_zed_conflict_suite": "Contributor guard, OAuth registration and GLM OAuth: 3 files / 75 tests passed; fixed fatal post-exchange polling flag after a failing regression test.",
+    "gateway_monitoring": "node --test tests/unit/gateway-monitoring.node-test.js: 2 passed; node-only test excluded from Vitest discovery.",
+    "live_production": "Not run. No deployment requested or performed.",
+    "live_claude_prefill": "Not run. Preserve escape hatch and default terminal-user policy tested offline only.",
+    "review_focused_suite": "Portal atomicity, Portal route, contributor OAuth, OAuth registration, Sonnet 5.5 and combo context: 6 files / 102 tests passed. Qoder, GitLab, catalog, Portal and fallback selected suite: 5 files / 100 tests passed.",
+    "build": "npm ci --legacy-peer-deps succeeded with v0.5.95 lockfile; npm run build compiled and generated 154 static pages. No production image built.",
+    "security_review": "Release remains blocked: auth/credential and contributor changes require principal final review under SAFE-050, independent security review, current deployed source/image and rollback verification, and staging integration smoke before merge/tag. No production deploy, merge, or tag requested or performed."
   },
   "maintenance_rules": [
     "Compare this manifest and its counts with git diff --name-status against upstream_sha before release.",
@@ -165,7 +171,6 @@
     "paths": [
       "open-sse/handlers/chatCore/nonStreamingHandler.js",
       "open-sse/handlers/chatCore/sseToJsonHandler.js",
-      "open-sse/handlers/chatCore/streamingHandler.js",
       "open-sse/handlers/responsesHandler.js",
       "open-sse/executors/codex.js",
       "open-sse/transformer/responsesTransformer.js",
@@ -194,16 +199,14 @@
     ]
   },
   "known_inert_carryovers": {
-    "note": "Retained whole-file dependencies whose largest new blocks have no production caller, because their call sites remain at upstream. Tested in isolation but unreachable; candidates for symbol-level reduction or removal in a follow-up.",
+    "note": "Only the pending-session timestamp remains inert; request-scoped account ordering and combo abort propagation have active callers on this branch.",
     "items": [
-      "src/sse/services/auth.js account-mutation ordering (beginAccountMutationAttempt and friends) has no callers.",
-      "open-sse/services/combo.js abort/signal plumbing is unreachable because src/sse/handlers/ remains at upstream arity.",
       "src/lib/oauth/utils/server.js records createdAt on pending sessions but nothing reads or sweeps it."
     ]
   },
   "qualification": {
     "method": "Run Azox behavior/contract tests against pure upstream before applying any downstream production code.",
-    "upstream_ref": "v0.5.86",
+    "upstream_ref": "v0.5.95",
     "sampled_contracts": {
       "claude_assistant_prefill": "missing",
       "contributor": "missing",
@@ -212,15 +215,19 @@
       "gateway_monitoring": "missing"
     },
     "absorbed": {
-      "provider_aware_model_modalities": "Upstream v0.5.86 accepts (provider, model), keys catalog modalities by provider:model, and preserves the globalThis catalog source across bundled route copies.",
-      "request_scoped_4xx_no_cooldown": "Upstream 20a43f5a handles generic request-scoped 4xx; the overlay retains only explicit model-compatibility classifiers used by the Azox prefill contract."
+      "provider_aware_model_modalities": "Upstream v0.5.95 retains provider-aware catalog modality lookup and shared globalThis catalog source. Azox model-catalog-scope tests passed and the old capabilities.js override was not ported.",
+      "request_scoped_4xx_no_cooldown": "Upstream v0.5.95 still handles generic request-scoped 4xx without account cooldown. The overlay retains explicit model-compatibility classifiers for Azox prefill only.",
+      "claude_prefill_cleanup": "Upstream v0.5.95 restores a user turn after cleanup but intentionally preserves client assistant prefills. Azox target policy still adds a user turn by default and preserves the assistant only with x-9router-assistant-prefill: preserve; upstream prefill tests conflict and remain six documented differences together with Azox system-cache anchoring.",
+      "codex_unicode_pattern": "Upstream PR #3938 is closed without merge; no Codex Unicode schema patch copied. Retest the exact behavior before carrying it as a future separate fix."
     },
     "conflicts_resolved": [
       "Preserved upstream Xiaomi MiMo OAuth while retaining contributor proxy ownership and secret-in-query rejection.",
       "Preserved upstream Zed systemId, retry-listener lifecycle and provider error behavior while binding contributor sessions to their reservation and proxy generation.",
       "Preserved upstream provider-aware Qoder userInfoUrl while retaining bounded response reads.",
-      "Preserved upstream tool-result image hoisting and the Azox selected-tool compatibility guard.",
-      "Retained upstream OAuthModal lifecycle and reapplied only the apiBase seam required by the contributor flow."
+      "Preserved upstream v0.5.95 Claude Sonnet 5.5 request handling, container_upload, trailing-user cleanup and final-tool-result caching; Azox prefill policy creates six documented upstream-test differences, not an undisclosed green suite.",
+      "Preserved upstream providerOverrides and Codex [1m] requested-model selection while wiring Azox guarded account mutation, request cancellation, and gateway telemetry.",
+      "Preserved upstream OAuthModal lifecycle and reapplied only the apiBase seam required by the contributor flow; retained upstream GLM/Muse device polling fatal flag after an explicit RED/GREEN test.",
+      "Preserved upstream tool-result image hoisting and the Azox selected-tool compatibility guard."
     ]
   }
 }

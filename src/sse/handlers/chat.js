@@ -2,6 +2,9 @@ import "open-sse/index.js";
 
 import {
   getProviderCredentials,
+  beginAccountMutationAttempt,
+  endAccountMutationAttempt,
+  recordAccountMutationSuccess,
   markAccountUnavailable,
   clearAccountError,
   extractApiKey,
@@ -15,6 +18,7 @@ import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
+import { upstreamResponseHeaders } from "open-sse/utils/upstreamHeaders.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
@@ -193,7 +197,8 @@ export async function handleChat(request, clientRawRequest = null) {
     });
   }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, monitoring, request?.signal);
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, monitoring, request?.signal,
+    contextMarker ? `${modelStr.slice(modelStr.indexOf("/") + 1)}[${contextMarker}]` : null);
 }
 
 /**
@@ -206,7 +211,8 @@ async function handleSingleModelChat(
   request = null,
   apiKey = null,
   monitoring = null,
-  signal = null
+  signal = null,
+  requestedModel = null
 ) {
   const modelInfo = await getModelInfo(modelStr);
 
@@ -301,13 +307,14 @@ async function handleSingleModelChat(
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
+  let lastHeaders = null;
   let accountAttempt = 0;
 
   while (true) {
     let credentials;
     try {
       credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
-        sessionKey, apiKey, encryptedContent, requestId, signal: signal || request?.signal,
+        sessionKey, apiKey, encryptedContent, requestId, requestedModel: requestedModel || model, signal: signal || request?.signal,
       });
     } catch (error) {
       if (isAbortError(error, signal || request?.signal)) {
@@ -330,14 +337,14 @@ async function handleSingleModelChat(
         const errorMsg = lastError || credentials.lastError || "Unavailable";
         const status = HTTP_STATUS.SERVICE_UNAVAILABLE;
         log.warn("CHAT", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
-        return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
+        return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman, lastHeaders);
       }
       if (excludeConnectionIds.size === 0) {
         log.warn("AUTH", `No active credentials for provider: ${provider}`);
         return errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`);
       }
       log.warn("CHAT", "No more accounts available", { provider });
-      return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
+      return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable", lastHeaders);
     }
 
     // Account selection shown in the unified "▶" line (acc:...)
@@ -368,51 +375,71 @@ async function handleSingleModelChat(
     // Use shared chatCore
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    const mutationAttempt = beginAccountMutationAttempt(credentials.connectionId, model);
+    const expectedPortalTokenVersion = credentials.providerSpecificData?.portalExternalId
+      ? credentials.providerSpecificData.portalTokenVersion
+      : undefined;
+    const mutationOptions = { mutationAttempt, ...(expectedPortalTokenVersion !== undefined
+      ? { expectedPortalTokenVersion } : {}) };
+    let mutationReleased = false;
+    const releaseMutationAttempt = () => {
+      if (mutationReleased) return;
+      mutationReleased = true;
+      endAccountMutationAttempt(mutationAttempt);
+    };
     let result;
     try {
       result = await handleChatCore({
-        body: { ...body, model: `${provider}/${model}` },
-        modelInfo: { provider, model },
-        credentials: refreshedCredentials,
-        log,
-        clientRawRequest,
-        connectionId: credentials.connectionId,
-        userAgent,
-        apiKey,
-        ccFilterNaming: !!chatSettings.ccFilterNaming,
-        rtkEnabled: !!chatSettings.rtkEnabled,
-        headroomEnabled: !!chatSettings.headroomEnabled,
-        headroomUrl: chatSettings.headroomUrl || DEFAULT_HEADROOM_URL,
-        headroomCompressUserMessages: !!chatSettings.headroomCompressUserMessages,
-        headroomTimeoutMs: chatSettings.headroomTimeoutMs,
-        cavemanEnabled: !!chatSettings.cavemanEnabled,
-        cavemanLevel: chatSettings.cavemanLevel || "full",
-        ponytailEnabled: !!chatSettings.ponytailEnabled,
-        ponytailLevel: chatSettings.ponytailLevel || "full",
-        pxpipeEnabled: !!chatSettings.pxpipeEnabled,
-        pxpipeMinChars: chatSettings.pxpipeMinChars,
-        pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
-        // Lazily warms the in-process module on first use; null when not installed (fail-open)
-        pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
-        onPxpipeEvent: appendPxpipeEvent,
-        providerThinking,
-        signal: signal || request?.signal,
-        // Detect source format by endpoint + body
-        sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
-        onCredentialsRefreshed: async (newCreds) => {
-          await updateProviderCredentials(credentials.connectionId, {
-            ...newCreds,
-            existingProviderSpecificData: credentials.providerSpecificData,
-            testStatus: "active"
-          });
-        },
-        onRequestSuccess: async () => {
-          await clearAccountError(credentials.connectionId, credentials, model);
+      body: { ...body, model: `${provider}/${model}` },
+      modelInfo: { provider, model },
+      credentials: refreshedCredentials,
+      log,
+      clientRawRequest,
+      connectionId: credentials.connectionId,
+      userAgent,
+      apiKey,
+      ccFilterNaming: !!chatSettings.ccFilterNaming,
+      rtkEnabled: !!chatSettings.rtkEnabled,
+      headroomEnabled: !!chatSettings.headroomEnabled,
+      headroomUrl: chatSettings.headroomUrl || DEFAULT_HEADROOM_URL,
+      headroomCompressUserMessages: !!chatSettings.headroomCompressUserMessages,
+      headroomTimeoutMs: chatSettings.headroomTimeoutMs,
+      cavemanEnabled: !!chatSettings.cavemanEnabled,
+      cavemanLevel: chatSettings.cavemanLevel || "full",
+      ponytailEnabled: !!chatSettings.ponytailEnabled,
+      ponytailLevel: chatSettings.ponytailLevel || "full",
+      pxpipeEnabled: !!chatSettings.pxpipeEnabled,
+      pxpipeMinChars: chatSettings.pxpipeMinChars,
+      pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
+      // Lazily warms the in-process module on first use; null when not installed (fail-open)
+      pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
+      onPxpipeEvent: appendPxpipeEvent,
+      providerThinking,
+      signal: signal || request?.signal,
+      // Per-provider user overrides (custom headers / connect timeout) from settings
+      providerOverrides: (chatSettings.providerOverrides || {})[provider] || null,
+      // Detect source format by endpoint + body
+      sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
+      onCredentialsRefreshed: async (newCreds) => {
+        await updateProviderCredentials(credentials.connectionId, {
+          ...newCreds,
+          existingProviderSpecificData: credentials.providerSpecificData,
+          testStatus: "active"
+        });
+      },
+      onRequestSuccess: async () => {
+        recordAccountMutationSuccess(mutationAttempt);
+        try {
+          await clearAccountError(credentials.connectionId, credentials, model, mutationOptions);
           // "Consecutive" strikes: a success clears the breaker for this pair.
           clearAntigravityStrikes(credentials.connectionId, model);
+        } finally {
+          releaseMutationAttempt();
         }
-      });
+      }
+    });
     } catch (error) {
+      releaseMutationAttempt();
       const aborted = isAbortError(error, signal || request?.signal);
       emitGatewayAttempt(buildGatewayAttemptLog({
         monitoring,
@@ -441,7 +468,10 @@ async function handleSingleModelChat(
       startTime: attemptStartedAt,
     }));
 
-    if (result.success) return withAffinityHeaders(result.response, credentials);
+    if (result.success) {
+      if (result.bypass) releaseMutationAttempt();
+      return withAffinityHeaders(result.response, credentials);
+    }
 
     // Antigravity 409/429: refresh live quota to get exact resetAt before locking
     let quotaResetMs = null;
@@ -456,9 +486,14 @@ async function handleSingleModelChat(
 
     // Exhausted Antigravity model is blocked only in RAM cache until upstream resetAt.
     // Do not persist a modelLock_* for this path.
-    const shouldFallback = provider === "antigravity" && quotaResetMs
-      ? true
-      : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs)).shouldFallback;
+    let shouldFallback;
+    try {
+      shouldFallback = provider === "antigravity" && quotaResetMs
+        ? true
+        : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs, mutationOptions)).shouldFallback;
+    } finally {
+      releaseMutationAttempt();
+    }
 
     if (shouldFallback) {
       if (sessionKey) {
@@ -470,6 +505,7 @@ async function handleSingleModelChat(
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;
       lastStatus = result.status;
+      lastHeaders = upstreamResponseHeaders(result.response?.headers);
       continue;
     }
 

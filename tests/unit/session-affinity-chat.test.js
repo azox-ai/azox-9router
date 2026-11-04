@@ -16,6 +16,9 @@ vi.mock("@/sse/services/auth.js", () => ({
   getProviderCredentials: mocks.getProviderCredentials,
   markAccountUnavailable: mocks.markAccountUnavailable,
   clearAccountError: vi.fn(),
+  beginAccountMutationAttempt: vi.fn(() => ({})),
+  endAccountMutationAttempt: vi.fn(),
+  recordAccountMutationSuccess: vi.fn(),
   extractApiKey: vi.fn(() => "client-key"),
   isValidApiKey: vi.fn(async () => true),
 }));
@@ -40,7 +43,9 @@ vi.mock("open-sse/services/capacityAdapter.js", () => ({
   getActiveAdapterStrategy: vi.fn(),
 }));
 vi.mock("open-sse/utils/bypassHandler.js", () => ({ handleBypassRequest: vi.fn(() => null) }));
-vi.mock("open-sse/translator/formats.js", () => ({ detectFormatByEndpoint: vi.fn(() => null) }));
+vi.mock("open-sse/translator/formats.js", async (importOriginal) => ({
+  ...(await importOriginal()), detectFormatByEndpoint: vi.fn(() => null),
+}));
 vi.mock("@/sse/utils/logger.js", () => ({
   debug: vi.fn(), info: vi.fn(), warn: mocks.warn, error: vi.fn(), maskKey: vi.fn(() => "***"),
 }));

@@ -114,6 +114,7 @@ function publicPollFailure(result) {
     error,
     errorDescription: PUBLIC_POLL_FAILURES[error] || "OAuth token polling failed",
     pending: error === "authorization_pending" || error === "slow_down",
+    ...(result?.fatal === true ? { fatal: true } : {}),
   };
 }
 
@@ -474,6 +475,8 @@ export async function GET(request, { params }, internalOptions = {}) {
         "qoder",
         "qoder-cn",
         "grok-cli",
+        "muse",
+        "glm",
       ];
       let deviceData;
       if (noPkceDeviceProviders.includes(provider)) {
@@ -773,7 +776,7 @@ export async function POST(request, { params }, internalOptions = {}) {
       }
 
       // Providers that don't use PKCE for device code
-      const noPkceProviders = ["github", "kimi", "kimi-coding", "kilocode", "codebuddy-cn", "codebuddy-intl"];
+      const noPkceProviders = ["github", "kimi", "kimi-coding", "kilocode", "codebuddy-cn", "codebuddy-intl", "glm"];
       let result;
       if (noPkceProviders.includes(provider)) {
         // kimi needs extraData._kimiDeviceId for stable X-Msh-Device-Id (CLIProxyAPI parity)

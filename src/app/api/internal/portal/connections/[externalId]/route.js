@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import {
-  deleteProviderConnection,
   getProviderConnections,
 } from "@/models";
-import { upsertPortalManagedConnection } from "@/lib/db/index";
+import { deletePortalManagedConnection, upsertPortalManagedConnection } from "@/lib/db/index";
 import { hasValidPortalSyncToken } from "@/lib/auth/portalSync";
 
 const ALLOWED_PROVIDERS = new Set(["claude", "codex"]);
@@ -105,6 +104,9 @@ export async function PUT(request, { params }) {
   if (outcome.status === "stale") {
     return NextResponse.json({ error: "Stale tokenVersion", tokenVersion: outcome.tokenVersion }, { status: 409 });
   }
+  if (outcome.status === "deleted") {
+    return NextResponse.json({ error: "Portal identity was deleted" }, { status: 409 });
+  }
 
   const connection = outcome.connection;
   return NextResponse.json({
@@ -134,8 +136,7 @@ export async function GET(request, { params }) {
 export async function DELETE(request, { params }) {
   if (!hasValidPortalSyncToken(request)) return unauthorized();
   const { externalId } = await params;
-  const connection = await findManagedConnection(externalId);
-  if (!connection) return NextResponse.json({ found: false }, { status: 404 });
-  await deleteProviderConnection(connection.id);
+  const deleted = await deletePortalManagedConnection(externalId);
+  if (!deleted) return NextResponse.json({ found: false }, { status: 404 });
   return new Response(null, { status: 204 });
 }

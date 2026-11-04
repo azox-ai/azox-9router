@@ -49,6 +49,7 @@ export function createSSEStream(options = {}) {
   let pendingClaudeTerminal = [];
   let finished = false;
   let emitted = 0;
+  let completionFlushTimer = null;
 
   function enqueue(controller, output) {
     if (!output) return;
@@ -64,6 +65,7 @@ export function createSSEStream(options = {}) {
     }
   }
   function finalize(pendingAlreadyReleased = false) {
+    if (completionFlushTimer) { clearTimeout(completionFlushTimer); completionFlushTimer = null; }
     if (finished) return;
     finished = true;
     // The stream controller's onDisconnect/onError may already have released
@@ -285,6 +287,17 @@ export function createSSEStream(options = {}) {
         fail(controller, "Upstream response failed or was incomplete");
       }
     } else passthrough(input, frame, controller);
+    // Keep upstream's bounded wait for a missing Chat usage trailer. Only a
+    // proven finish_reason can arm this watchdog; it never turns EOF into success.
+    if (providerFormat === FORMATS.OPENAI && clientFormat === FORMATS.OPENAI_RESPONSES
+        && state?.completionPending && !state.completedSent && !completionFlushTimer) {
+      completionFlushTimer = setTimeout(() => {
+        completionFlushTimer = null;
+        if (finished || terminalState.terminal) return;
+        try { emitTranslation(null, controller); }
+        catch { /* downstream already closed */ }
+      }, 3000);
+    }
   }
   function process(frames, controller) {
     for (const frame of frames) {
