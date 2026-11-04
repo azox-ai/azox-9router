@@ -1,6 +1,6 @@
 import { FORMATS } from "../translator/formats.js";
 import { ROLE, OPENAI_BLOCK, CLAUDE_BLOCK, COMMANDCODE_BLOCK, RESPONSES_ITEM } from "../translator/schema/index.js";
-import { HEADROOM_TOOL_OUTPUT_MAX_DEPTH } from "./constants.js";
+import { HEADROOM_TOOL_OUTPUT_MAX_DEPTH, MIN_COMPRESS_SIZE } from "./constants.js";
 import {
   openaiResponsesToOpenAIRequest,
   openaiToOpenAIResponsesRequest,
@@ -113,7 +113,7 @@ function collectToolOutputText(body, format) {
     if (depth > HEADROOM_TOOL_OUTPUT_MAX_DEPTH) return;
     const value = object?.[key];
     if (typeof value === "string") {
-      if (!value.trim()) return;
+      if (!value.trim() || new TextEncoder().encode(value).length < MIN_COMPRESS_SIZE) return;
       try { JSON.parse(value); return; } catch { /* plain text */ }
       messages.push({ role: ROLE.TOOL, tool_call_id: `headroom-tool-${messages.length}`, content: value });
       targets.push({ object, key, text: value });
@@ -422,7 +422,9 @@ export async function compressWithHeadroom(body, { enabled, url, model, format, 
     const toolOutputs = collectToolOutputText(body, format);
     if (toolOutputs) {
       if (!toolOutputs.messages.length) {
-        setDiagnostic(diagnostics, "no eligible plain-text tool output");
+        setDiagnostic(diagnostics, format === FORMATS.OPENAI_RESPONSES
+          ? "skipped: openai-responses tool/reasoning input is not safe to compress"
+          : "no eligible plain-text tool output");
         return null;
       }
       const data = await callCompress(url, toolOutputs.messages, model, timeoutMs, compressUserMessages, diagnostics || {});

@@ -200,7 +200,7 @@ export class GithubExecutor extends BaseExecutor {
           const trimmed = line.trim();
           if (!trimmed) continue;
 
-          const parsed = parseSSELine(trimmed);
+          const parsed = parseSSELine(trimmed, FORMATS.OPENAI);
           if (!parsed) continue;
 
           if (parsed.done && stream === true) {
@@ -217,8 +217,10 @@ export class GithubExecutor extends BaseExecutor {
       },
       flush(controller) {
         if (buffer.trim()) {
-          const parsed = parseSSELine(buffer.trim());
-          if (parsed && !parsed.done) {
+          const parsed = parseSSELine(buffer.trim(), FORMATS.OPENAI);
+          if (parsed?.done && stream === true) {
+            controller.enqueue(new TextEncoder().encode(SSE_DONE));
+          } else if (parsed && !parsed.done) {
             const converted = openaiResponsesToOpenAIResponse(parsed, state);
             if (converted) {
               controller.enqueue(new TextEncoder().encode(formatSSE(converted, "openai")));
@@ -302,7 +304,7 @@ export class GithubExecutor extends BaseExecutor {
           const trimmed = line.trim();
           if (!trimmed) continue;
 
-          const parsed = parseSSELine(trimmed);
+          const parsed = parseSSELine(trimmed, FORMATS.OPENAI);
           if (!parsed) continue;
 
           if (parsed.done && stream === true) {
@@ -315,8 +317,10 @@ export class GithubExecutor extends BaseExecutor {
       },
       flush(controller) {
         if (buffer.trim()) {
-          const parsed = parseSSELine(buffer.trim());
-          if (parsed && !parsed.done) {
+          const parsed = parseSSELine(buffer.trim(), FORMATS.OPENAI);
+          if (parsed?.done && stream === true) {
+            controller.enqueue(new TextEncoder().encode(SSE_DONE));
+          } else if (parsed && !parsed.done) {
             emitAll(controller, translateResponse(FORMATS.CLAUDE, FORMATS.OPENAI, parsed, state));
           }
         }

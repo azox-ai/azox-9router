@@ -109,7 +109,7 @@ function inspectResponsesEvent(obj) {
 // Inspect one complete client-format SSE line (parsed with the shared parseSSELine) and report
 // whether it carries content and/or a finish reason. Non-data lines and "[DONE]" carry nothing.
 export function inspectSSELine(line) {
-  const parsed = parseSSELine(line.trimStart());
+  const parsed = parseSSELine(line.trimStart(), FORMATS.OPENAI);
   if (!parsed || parsed.done) return { content: false, finishReason: null };
   if (typeof parsed.type === "string" && !Array.isArray(parsed.choices)) {
     return parsed.type.startsWith(RESPONSES_EVENT_PREFIX) ? inspectResponsesEvent(parsed) : inspectClaudeEvent(parsed);
