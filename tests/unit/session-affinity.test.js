@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   updateProviderConnection: vi.fn(),
 }));
 
-// In-memory stand-in for the SQLite kv table used by sessionAffinity.js.
+// Model SQLite uniqueness and compare-and-delete, not an unconditional Map upsert.
 vi.mock("@/lib/db/driver.js", () => {
   const k = (scope, key) => `${scope}\u0000${key}`;
   const db = {
@@ -15,9 +15,15 @@ vi.mock("@/lib/db/driver.js", () => {
     all: (_sql, [scope]) => [...store.entries()]
       .filter(([key]) => key.startsWith(`${scope}\u0000`))
       .map(([key, value]) => ({ key: key.split("\u0000")[1], value })),
-    run: (sql, params) => {
-      if (sql.startsWith("DELETE")) store.delete(k(params[0], params[1]));
-      else store.set(k(params[0], params[1]), params[2]);
+    run: (sql, [scope, key, value]) => {
+      const id = k(scope, key);
+      if (sql.startsWith("DELETE")) {
+        if (!store.has(id) || (value !== undefined && store.get(id) !== value)) return { changes: 0 };
+        store.delete(id);
+      } else {
+        if (sql.includes("DO NOTHING") && store.has(id)) return { changes: 0 };
+        store.set(id, value);
+      }
       return { changes: 1 };
     },
     transaction: (fn) => fn(),
@@ -37,7 +43,7 @@ vi.mock("@/lib/network/connectionProxy", () => ({
 }));
 vi.mock("@/shared/constants/providers.js", () => ({
   FREE_PROVIDERS: {},
-  resolveProviderId: (provider) => provider,
+  resolveProviderId: (provider) => provider === "cx" ? "codex" : provider,
 }));
 vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn() }));
 
@@ -46,6 +52,7 @@ const { getProviderCredentials } = await import("@/sse/services/auth.js");
 
 const headers = (h) => new Headers(h);
 const conn = (id, extra = {}) => ({ id, provider: "codex", isActive: true, ...extra });
+const rowKey = (scope, identity) => `${scope}\u0000${identity.key}`;
 let logSpy;
 
 function events() {
@@ -57,10 +64,8 @@ function events() {
 beforeEach(() => {
   store.clear();
   vi.clearAllMocks();
-  affinity.__resetAffinitySweepForTests();
   delete process.env.NINEROUTER_SESSION_AFFINITY_TTL_MS;
   logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-  // Round-robin with a sticky limit of 1 rotates every request without affinity.
   mocks.getSettings.mockResolvedValue({ fallbackStrategy: "round-robin", stickyRoundRobinLimit: 1 });
   const connections = [conn("conn-aaaa-1111"), conn("conn-bbbb-2222")];
   mocks.getProviderConnections.mockImplementation(async () => connections);
@@ -68,7 +73,10 @@ beforeEach(() => {
     Object.assign(connections.find((c) => c.id === id), update);
   });
 });
-afterEach(() => logSpy.mockRestore());
+afterEach(() => {
+  vi.useRealTimers();
+  logSpy.mockRestore();
+});
 
 describe("session key extraction", () => {
   it("uses headers in priority order, then body fields", () => {
@@ -87,15 +95,16 @@ describe("session key extraction", () => {
     expect(affinity.containsEncryptedContent({ input: [{ role: "user", content: "encrypted_content" }] })).toBe(false);
   });
 
-  it("stores only a hash, scoped by API key and provider", () => {
+  it("stores only a hash, scoped by API key and canonical provider", () => {
     const a = affinity.affinityIdentity("sess", "codex", "key-1");
     expect(a.key).not.toContain("sess");
     expect(a.key).not.toContain("key-1");
     expect(affinity.affinityIdentity("sess", "codex", "key-2").key).not.toBe(a.key);
     expect(affinity.affinityIdentity("sess", "claude", "key-1").key).not.toBe(a.key);
+    expect(affinity.affinityIdentity("sess", "cx", "key-1").key).toBe(a.key);
   });
 
-  it("reads TTL from env, then settings, defaulting to 24h", () => {
+  it("reads lease TTL from env, then settings, defaulting to 24h", () => {
     expect(affinity.affinityTtlMs({})).toBe(86_400_000);
     expect(affinity.affinityTtlMs({ sessionAffinityTtlMs: 0 })).toBe(0);
     process.env.NINEROUTER_SESSION_AFFINITY_TTL_MS = "60000";
@@ -103,22 +112,20 @@ describe("session key extraction", () => {
   });
 });
 
-describe("getProviderCredentials affinity", () => {
+describe("getProviderCredentials durable affinity", () => {
   const opts = { sessionKey: "codex-session-1", apiKey: "k", requestId: "req-1" };
+  const identity = () => affinity.affinityIdentity(opts.sessionKey, "codex", opts.apiKey);
 
-  it("creates a pin then keeps hitting it beyond the round-robin sticky limit", async () => {
+  it("creates an owner then keeps hitting it beyond the round-robin sticky limit", async () => {
     const first = await getProviderCredentials("codex", null, "gpt-5.5", opts);
     expect(first.affinity).toBe("created");
     for (let i = 0; i < 5; i++) {
       const next = await getProviderCredentials("codex", null, "gpt-5.5", opts);
-      expect(next.affinity).toBe("hit");
-      expect(next.connectionId).toBe(first.connectionId);
+      expect(next).toMatchObject({ affinity: "hit", connectionId: first.connectionId });
     }
-    // Without a session the stock strategy still rotates.
     const other = await getProviderCredentials("codex", null, "gpt-5.5", {});
     expect(other.affinity).toBe("none");
     expect(other.connectionId).not.toBe(first.connectionId);
-
     const evs = events();
     expect(evs[0]).toMatchObject({ event: "affinity_created", provider: "codex", request_id: "req-1",
       connection_id: first.connectionId.slice(0, 8) });
@@ -127,99 +134,124 @@ describe("getProviderCredentials affinity", () => {
     expect(evs.filter((e) => e.event === "affinity_hit")).toHaveLength(5);
   });
 
-  it("clears a pin to a model-locked account and repins for normal requests", async () => {
+  it.each([false, true])("retains original owner after seven idle days (encrypted=%s)", async (encryptedContent) => {
+    vi.useFakeTimers();
     const first = await getProviderCredentials("codex", null, "gpt-5.5", opts);
-    const conns = await mocks.getProviderConnections();
-    conns.find((c) => c.id === first.connectionId)["modelLock_gpt-5.5"] = new Date(Date.now() + 60_000).toISOString();
-
-    const next = await getProviderCredentials("codex", null, "gpt-5.5", opts);
-    expect(next.connectionId).not.toBe(first.connectionId);
-    expect(next.affinity).toBe("created");
-    expect(events()).toContainEqual(expect.objectContaining({ event: "affinity_cleared", reason: "unavailable_or_locked" }));
+    vi.advanceTimersByTime(7 * 86_400_000);
+    const next = await getProviderCredentials("codex", null, "gpt-5.5", { ...opts, encryptedContent });
+    expect(next).toMatchObject({ affinity: "hit", connectionId: first.connectionId });
+    expect(events().some((e) => e.event === "affinity_cleared")).toBe(false);
   });
 
-  it("fails closed for encrypted_content when the pinned account is excluded", async () => {
+  it("retains owner through a plaintext model lock, then resumes old ciphertext", async () => {
     const first = await getProviderCredentials("codex", null, "gpt-5.5", opts);
+    const conns = await mocks.getProviderConnections();
+    const owner = conns.find((c) => c.id === first.connectionId);
+    owner["modelLock_gpt-5.5"] = new Date(Date.now() + 60_000).toISOString();
+    expect(await getProviderCredentials("codex", null, "gpt-5.5", opts))
+      .toMatchObject({ affinityUnavailable: true, retryable: true });
+    delete owner["modelLock_gpt-5.5"];
+    expect(await getProviderCredentials("codex", null, "gpt-5.5", { ...opts, encryptedContent: true }))
+      .toMatchObject({ affinity: "hit", connectionId: first.connectionId });
+    expect(events().some((e) => e.event === "affinity_cleared")).toBe(false);
+  });
+
+  it.each(["banned", "expired", "credits_exhausted", "cooldown", "inactive"])("does not replace %s owner", async (state) => {
+    const first = await getProviderCredentials("codex", null, "gpt-5.5", opts);
+    const conns = await mocks.getProviderConnections();
+    const owner = conns.find((c) => c.id === first.connectionId);
+    if (state === "cooldown") owner.rateLimitedUntil = new Date(Date.now() + 60_000).toISOString();
+    else if (state === "inactive") mocks.getProviderConnections.mockResolvedValue(conns.filter((c) => c !== owner));
+    else owner.testStatus = state;
+    const snapshot = new Map(store);
+    const result = await getProviderCredentials("codex", null, "gpt-5.5", { ...opts, encryptedContent: true });
+    expect(result).toMatchObject({ affinityUnavailable: true, retryable: true });
+    expect(store).toEqual(snapshot);
+  });
+
+  it("keeps an excluded owner instead of clearing its mapping", async () => {
+    const first = await getProviderCredentials("codex", null, "gpt-5.5", opts);
+    const snapshot = new Map(store);
     const result = await getProviderCredentials("codex", new Set([first.connectionId]), "gpt-5.5",
       { ...opts, encryptedContent: true });
-    expect(result).toMatchObject({ affinityUnavailable: true, reason: "pinned account excluded" });
-    expect(events().map((e) => e.event)).toEqual(["affinity_created", "affinity_cleared", "affinity_unavailable"]);
+    expect(result).toMatchObject({ affinityUnavailable: true, reason: "pinned account excluded", retryable: true });
+    expect(store).toEqual(snapshot);
+    expect(events().map((e) => e.event)).toEqual(["affinity_created", "affinity_unavailable"]);
   });
 
-  it("fails closed for encrypted_content when the pinned account is model-locked", async () => {
-    const first = await getProviderCredentials("codex", null, "gpt-5.5", opts);
-    const conns = await mocks.getProviderConnections();
-    conns.find((c) => c.id === first.connectionId)["modelLock_gpt-5.5"] = new Date(Date.now() + 60_000).toISOString();
-    const result = await getProviderCredentials("codex", null, "gpt-5.5", { ...opts, encryptedContent: true });
-    expect(result).toMatchObject({ affinityUnavailable: true, reason: "pinned account unavailable_or_locked" });
-  });
-
-  it("fails closed for encrypted_content when the pinned account was deactivated", async () => {
-    const first = await getProviderCredentials("codex", null, "gpt-5.5", opts);
-    mocks.getProviderConnections.mockResolvedValue([]);
+  it("requires a preexisting owner for ciphertext even with only one active account", async () => {
+    mocks.getProviderConnections.mockResolvedValue([conn("conn-aaaa-1111")]);
     const result = await getProviderCredentials("codex", null, "gpt-5.5", { ...opts, encryptedContent: true });
     expect(result).toMatchObject({ affinityUnavailable: true });
-    expect(events()).toContainEqual(expect.objectContaining({ event: "affinity_cleared",
-      connection_id: first.connectionId.slice(0, 8) }));
-  });
-
-  it("fails closed for encrypted_content without an existing pin", async () => {
-    const result = await getProviderCredentials("codex", null, "gpt-5.5", { ...opts, encryptedContent: true });
-    expect(result).toMatchObject({ affinityUnavailable: true, reason: "encrypted_content without an active pin" });
-    expect(events()).toEqual([expect.objectContaining({ event: "affinity_unavailable",
-      reason: "encrypted_content_without_pin", connection_id: null })]);
-    expect(store.size).toBe(0);
-    const first = await getProviderCredentials("codex", null, "gpt-5.5", opts);
-    const next = await getProviderCredentials("codex", null, "gpt-5.5", { ...opts, encryptedContent: true });
-    expect(next).toMatchObject({ affinity: "hit", connectionId: first.connectionId });
-  });
-
-  it("fails closed for encrypted_content after TTL expiry", async () => {
-    mocks.getSettings.mockResolvedValue({ fallbackStrategy: "fill-first", sessionAffinityTtlMs: 1000 });
-    vi.useFakeTimers();
-    try {
-      await getProviderCredentials("codex", null, "gpt-5.5", opts);
-      vi.advanceTimersByTime(1001);
-      const next = await getProviderCredentials("codex", null, "gpt-5.5", { ...opts, encryptedContent: true });
-      expect(next).toMatchObject({ affinityUnavailable: true, reason: "encrypted_content without an active pin" });
-      expect(events()).toContainEqual(expect.objectContaining({ event: "affinity_cleared", reason: "expired" }));
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("fails closed for encrypted_content without a session key", async () => {
-    const r = await getProviderCredentials("codex", null, "gpt-5.5", { apiKey: "k", encryptedContent: true });
-    expect(r).toMatchObject({ affinityUnavailable: true });
     expect(store.size).toBe(0);
   });
 
-  it("expires pins after the TTL", async () => {
-    mocks.getSettings.mockResolvedValue({ fallbackStrategy: "fill-first", sessionAffinityTtlMs: 1000 });
-    vi.useFakeTimers();
-    try {
-      await getProviderCredentials("codex", null, "gpt-5.5", opts);
-      vi.advanceTimersByTime(1001);
-      const next = await getProviderCredentials("codex", null, "gpt-5.5", opts);
-      expect(next.affinity).toBe("created");
-      expect(events()).toContainEqual(expect.objectContaining({ event: "affinity_cleared", reason: "expired" }));
-    } finally {
-      vi.useRealTimers();
-    }
+  it("requires a session key for ciphertext", async () => {
+    const result = await getProviderCredentials("codex", null, "gpt-5.5", { apiKey: "k", encryptedContent: true });
+    expect(result).toMatchObject({ affinityUnavailable: true });
+    expect(store.size).toBe(0);
   });
 
-  it("is disabled when TTL is 0", async () => {
+  it("TTL=0 disables leases, not ownership or ciphertext safety", async () => {
     mocks.getSettings.mockResolvedValue({ sessionAffinityTtlMs: 0 });
-    const r = await getProviderCredentials("codex", null, "gpt-5.5", { ...opts, encryptedContent: true });
-    expect(r.affinity).toBe("none");
-    expect(store.size).toBe(0);
+    expect(await getProviderCredentials("codex", null, "gpt-5.5", { ...opts, encryptedContent: true }))
+      .toMatchObject({ affinityUnavailable: true });
+    const first = await getProviderCredentials("codex", null, "gpt-5.5", opts);
+    expect(first.affinity).toBe("created");
+    expect(await getProviderCredentials("codex", null, "gpt-5.5", { ...opts, encryptedContent: true }))
+      .toMatchObject({ affinity: "hit", connectionId: first.connectionId });
   });
 
-  it("does not clear a newer pin when a stale connection fails", async () => {
+  it.each([-1000, 60_000])("promotes legacy owner even if lease expiry offset is %s", async (offset) => {
+    store.set(rowKey("sessionAccountAffinity", identity()), JSON.stringify({ connectionId: "conn-bbbb-2222", expiresAt: Date.now() + offset }));
+    expect(await getProviderCredentials("codex", null, "gpt-5.5", { ...opts, encryptedContent: true }))
+      .toMatchObject({ affinity: "hit", connectionId: "conn-bbbb-2222" });
+    expect(await affinity.readOwner(identity())).toMatchObject({ version: 1, connectionId: "conn-bbbb-2222" });
+  });
+
+  it("creating a different session never sweeps another expired legacy owner", async () => {
+    store.set(rowKey("sessionAccountAffinity", identity()), JSON.stringify({ connectionId: "conn-bbbb-2222", expiresAt: Date.now() - 1000 }));
+    await getProviderCredentials("codex", null, "gpt-5.5", { ...opts, sessionKey: "other" });
+    expect(await getProviderCredentials("codex", null, "gpt-5.5", { ...opts, encryptedContent: true }))
+      .toMatchObject({ affinity: "hit", connectionId: "conn-bbbb-2222" });
+  });
+
+  it.each(["sessionAccountOwner", "sessionAccountAffinity"])("fails closed without overwriting corrupt %s", async (scope) => {
+    store.set(rowKey(scope, identity()), "{broken");
+    const snapshot = new Map(store);
+    expect(await getProviderCredentials("codex", null, "gpt-5.5", opts))
+      .toMatchObject({ affinityUnavailable: true, retryable: false });
+    expect(store).toEqual(snapshot);
+  });
+
+  it("respects an immutable winner from another selector", async () => {
+    await affinity.claimOwner(identity(), "conn-bbbb-2222");
+    expect(await getProviderCredentials("codex", null, "gpt-5.5", opts))
+      .toMatchObject({ affinity: "hit", connectionId: "conn-bbbb-2222" });
+    const result = await affinity.claimOwner(identity(), "conn-aaaa-1111");
+    expect(result.owner.connectionId).toBe("conn-bbbb-2222");
+    expect(result.created).toBe(false);
+  });
+});
+
+describe("ownership and lease helpers", () => {
+  it("diagnostic reads do not mutate expired legacy evidence", async () => {
     const identity = affinity.affinityIdentity("s", "codex", "k");
+    store.set(rowKey("sessionAccountAffinity", identity), JSON.stringify({ connectionId: "conn-old", expiresAt: 1 }));
+    const snapshot = new Map(store);
+    expect(await affinity.readOwner(identity)).toBeNull();
+    expect(await affinity.readPin(identity)).toMatchObject({ connectionId: "conn-old", expired: true });
+    expect(store).toEqual(snapshot);
+  });
+
+  it("clearing a lease cannot delete ownership or another connection's lease", async () => {
+    const identity = affinity.affinityIdentity("s", "codex", "k");
+    await affinity.claimOwner(identity, "conn-new");
     await affinity.setPin(identity, "conn-new", 60_000);
     expect(await affinity.clearPin(identity, "conn-old")).toBe(false);
     expect((await affinity.readPin(identity)).connectionId).toBe("conn-new");
+    expect(await affinity.clearPin(identity, "conn-new")).toBe(true);
+    expect((await affinity.readOwner(identity)).connectionId).toBe("conn-new");
   });
 });
 
@@ -231,11 +263,17 @@ describe("response helpers", () => {
     expect(res.headers.get("x-9router-affinity")).toBe("hit");
   });
 
-  it("returns a clear 409 for unavailable encrypted-content affinity", async () => {
-    const res = affinity.affinityUnavailableResponse("pinned account failed with upstream 429");
+  it("returns a terminal 409 for unknown ownership", async () => {
+    const res = affinity.affinityUnavailableResponse("missing original owner");
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error.code).toBe("session_affinity_unavailable");
-    expect(body.error.message).toContain("upstream 429");
+    expect(body.error.message).toContain("missing original owner");
+  });
+
+  it("temporary failure tells client to retain and retry same session", async () => {
+    const body = await affinity.affinityUnavailableResponse("pinned account failed with upstream 429", true).json();
+    expect(body.error.message).toMatch(/same session/i);
+    expect(body.error.message).not.toMatch(/Start a new session/);
   });
 });

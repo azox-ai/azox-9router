@@ -3,6 +3,7 @@ import { getAdapter } from "@/lib/db/driver.js";
 import { resolveProviderId } from "@/shared/constants/providers.js";
 
 const SCOPE = "sessionAccountAffinity";
+const OWNER_SCOPE = "sessionAccountOwner";
 export const DEFAULT_AFFINITY_TTL_MS = 24 * 60 * 60 * 1000;
 
 function sessionValue(value) {
@@ -48,53 +49,96 @@ export function affinityTtlMs(settings) {
   return Number.isSafeInteger(ttl) && ttl >= 0 && ttl <= 86_400_000 ? ttl : DEFAULT_AFFINITY_TTL_MS;
 }
 
+function validConnectionId(connectionId) {
+  return typeof connectionId === "string" && connectionId.length > 0 && connectionId.length <= 512;
+}
+
+function parseOwner(row) {
+  if (!row) return null;
+  try {
+    const owner = JSON.parse(row.value);
+    if (owner?.version === 1 && validConnectionId(owner.connectionId)
+        && Number.isSafeInteger(owner.createdAt) && owner.createdAt >= 0) return owner;
+  } catch { /* malformed ownership must not be replaced */ }
+  return { invalid: true };
+}
+
+function readOwnerFromDb(db, identity) {
+  return parseOwner(db.get("SELECT value FROM kv WHERE scope = ? AND key = ?", [OWNER_SCOPE, identity.key]));
+}
+
+// Read-only diagnostic: neither an expired lease nor a malformed owner may be deleted here.
+export async function readOwner(identity) {
+  const db = await getAdapter();
+  return readOwnerFromDb(db, identity);
+}
+
 export async function readPin(identity, now = Date.now()) {
   const db = await getAdapter();
   const row = db.get("SELECT value FROM kv WHERE scope = ? AND key = ?", [SCOPE, identity.key]);
   if (!row) return null;
   let pin;
-  try { pin = JSON.parse(row.value); } catch { /* corrupt/old record */ }
-  if (!pin?.connectionId || !Number.isFinite(pin.expiresAt) || pin.expiresAt <= now) {
-    db.run("DELETE FROM kv WHERE scope = ? AND key = ?", [SCOPE, identity.key]);
-    return { expired: true, connectionId: pin?.connectionId || null };
-  }
-  return pin;
+  try { pin = JSON.parse(row.value); } catch { /* retain malformed legacy evidence */ }
+  if (!validConnectionId(pin?.connectionId) || !Number.isFinite(pin.expiresAt)) return { invalid: true };
+  return { ...pin, ...(pin.expiresAt <= now ? { expired: true } : {}) };
 }
 
-const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
-let nextSweepAt = 0;
+function insertOwner(db, identity, connectionId, now) {
+  return db.run("INSERT INTO kv(scope, key, value) VALUES(?, ?, ?) ON CONFLICT(scope, key) DO NOTHING", [
+    OWNER_SCOPE, identity.key, JSON.stringify({ version: 1, connectionId, createdAt: now }),
+  ]);
+}
 
-// Bound table growth from sessions that are never resumed.
-function sweepExpired(db, now) {
-  if (now < nextSweepAt) return;
-  nextSweepAt = now + SWEEP_INTERVAL_MS;
-  const expired = db.all("SELECT key, value FROM kv WHERE scope = ?", [SCOPE]).filter((row) => {
-    try { return !(JSON.parse(row.value)?.expiresAt > now); } catch { return true; }
-  });
-  if (expired.length === 0) return;
-  db.transaction(() => {
-    for (const row of expired) db.run("DELETE FROM kv WHERE scope = ? AND key = ?", [SCOPE, row.key]);
-  });
+// Preserve the original account even when the old lease has expired; never sweep evidence
+// from other sessions while lazily promoting legacy rows.
+export async function resolveOwner(identity, now = Date.now()) {
+  const db = await getAdapter();
+  // sql.js uses independent in-memory snapshots and debounced file writes. It
+  // cannot arbitrate owners across workers or persist a claim before dispatch.
+  if (db.driver === "sql.js") throw new Error("Session ownership requires a native SQLite driver");
+  const owner = readOwnerFromDb(db, identity);
+  if (owner) return owner;
+  const row = db.get("SELECT value FROM kv WHERE scope = ? AND key = ?", [SCOPE, identity.key]);
+  if (!row) return null;
+  let legacy;
+  try { legacy = JSON.parse(row.value); } catch { /* malformed legacy evidence */ }
+  if (!validConnectionId(legacy?.connectionId) || !Number.isFinite(legacy.expiresAt)) return { invalid: true };
+  insertOwner(db, identity, legacy.connectionId, now);
+  return readOwnerFromDb(db, identity) || { invalid: true };
+}
+
+// SQLite uniqueness, not the process-local selection mutex, arbitrates simultaneous
+// first turns in different workers. A losing caller must use the persisted winner.
+export async function claimOwner(identity, connectionId, now = Date.now()) {
+  const owner = await resolveOwner(identity, now);
+  if (owner) return { owner, created: false };
+  if (!validConnectionId(connectionId)) return { owner: { invalid: true }, created: false };
+  const db = await getAdapter();
+  const result = insertOwner(db, identity, connectionId, now);
+  return { owner: readOwnerFromDb(db, identity) || { invalid: true }, created: result.changes === 1 };
 }
 
 export async function setPin(identity, connectionId, ttl, now = Date.now()) {
+  const { owner } = await claimOwner(identity, connectionId, now);
+  if (owner.invalid || owner.connectionId !== connectionId) throw new Error("Session account owner mismatch");
+  if (ttl <= 0) return;
   const db = await getAdapter();
-  sweepExpired(db, now);
   db.run("INSERT INTO kv(scope, key, value) VALUES(?, ?, ?) ON CONFLICT(scope, key) DO UPDATE SET value = excluded.value", [
     SCOPE, identity.key, JSON.stringify({ connectionId, expiresAt: now + ttl }),
   ]);
 }
 
-// Conditional deletion prevents a late failed request from clearing a newer pin.
+// A stale failure may clear only its own lease, never the durable owner or a newer lease.
 export async function clearPin(identity, connectionId) {
+  const owner = await resolveOwner(identity);
+  if (!owner || owner.invalid || (connectionId && owner.connectionId !== connectionId)) return false;
   const db = await getAdapter();
   const row = db.get("SELECT value FROM kv WHERE scope = ? AND key = ?", [SCOPE, identity.key]);
   if (!row) return false;
   let pin;
-  try { pin = JSON.parse(row.value); } catch { /* corrupt record */ }
-  if (connectionId && pin?.connectionId !== connectionId) return false;
-  db.run("DELETE FROM kv WHERE scope = ? AND key = ?", [SCOPE, identity.key]);
-  return true;
+  try { pin = JSON.parse(row.value); } catch { return false; }
+  if (pin?.connectionId !== owner.connectionId) return false;
+  return db.run("DELETE FROM kv WHERE scope = ? AND key = ? AND value = ?", [SCOPE, identity.key, row.value]).changes === 1;
 }
 
 export function affinityLog(event, identity, connectionId, requestId, reason) {
@@ -114,11 +158,12 @@ export function withAffinityHeaders(response, credentials) {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
-export function affinityUnavailableResponse(detail = "") {
+export function affinityUnavailableResponse(detail = "", retryable = false) {
   const suffix = detail ? ` (${String(detail).replace(/[\r\n]/g, " ").slice(0, 200)})` : "";
+  const message = retryable
+    ? "The original session account is temporarily unavailable. Ownership is retained; retry the same session when the account is available."
+    : "No trustworthy original account mapping is available. Restore the original mapping or start a new conversation without old encrypted content.";
   return new Response(JSON.stringify({ error: { code: "session_affinity_unavailable", type: "invalid_request_error",
-    message: `Encrypted content requires its original pinned account; no usable session pin is available. Start a new session.${suffix}` } }),
+    message: `${message}${suffix}` } }),
     { status: 409, headers: { "Content-Type": "application/json", "x-9router-affinity": "none" } });
 }
-
-export function __resetAffinitySweepForTests() { nextSweepAt = 0; }

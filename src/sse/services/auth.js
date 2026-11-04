@@ -7,7 +7,7 @@ import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
 import { throwIfAborted } from "open-sse/utils/abort.js";
 import * as log from "../utils/logger.js";
-import { affinityIdentity, affinityTtlMs, readPin, setPin, clearPin, affinityLog } from "./sessionAffinity.js";
+import { affinityIdentity, affinityTtlMs, resolveOwner, claimOwner, setPin, affinityLog } from "./sessionAffinity.js";
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
@@ -286,6 +286,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings)
     if (FREE_PROVIDERS[providerId]?.noAuth) {
+      if (options?.encryptedContent) {
+        affinityLog("affinity_unavailable", identity, null, options?.requestId, "no_account_owner");
+        return { affinityUnavailable: true, reason: "provider has no original account mapping", retryable: false };
+      }
       const settings = await getSettings();
       throwIfAborted(signal);
       const override = (settings.providerStrategies || {})[providerId] || {};
@@ -354,29 +358,31 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const settings = await getSettings();
     throwIfAborted(signal);
     const ttl = affinityTtlMs(settings);
-    let pin = identity && ttl > 0 ? await readPin(identity) : null;
-    throwIfAborted(signal);
-    if (pin?.expired) {
-      affinityLog("affinity_cleared", identity, pin.connectionId, options?.requestId, "expired");
-      pin = null;
-    } else if (pin && !availableConnections.some(c => c.id === pin.connectionId)) {
-      const reason = excludeSet.has(pin.connectionId) ? "excluded" : "unavailable_or_locked";
-      await clearPin(identity, pin.connectionId);
-      affinityLog("affinity_cleared", identity, pin.connectionId, options?.requestId, reason);
-      // The ciphertext was issued by the pinned account; switching would make
-      // upstream reject it, so fail closed instead of guessing another account.
-      if (options?.encryptedContent) {
-        affinityLog("affinity_unavailable", identity, pin.connectionId, options?.requestId, `pinned_${reason}`);
-        return { affinityUnavailable: true, reason: `pinned account ${reason}` };
+    let owner = null;
+    if (identity) {
+      try {
+        owner = await resolveOwner(identity);
+      } catch {
+        affinityLog("affinity_unavailable", identity, null, options?.requestId, "owner_storage_unavailable");
+        return { affinityUnavailable: true, reason: "session ownership storage unavailable", retryable: true };
       }
-      pin = null;
+    }
+    throwIfAborted(signal);
+    if (owner?.invalid) {
+      affinityLog("affinity_unavailable", identity, null, options?.requestId, "invalid_owner");
+      return { affinityUnavailable: true, reason: "invalid original account mapping", retryable: false };
+    }
+    if (owner && !availableConnections.some(c => c.id === owner.connectionId)) {
+      const reason = excludeSet.has(owner.connectionId) ? "excluded" : "unavailable_or_locked";
+      affinityLog("affinity_unavailable", identity, owner.connectionId, options?.requestId, `pinned_${reason}`);
+      return { affinityUnavailable: true, reason: `pinned account ${reason}`, retryable: true };
     }
 
-    // Ciphertext from an unpinned (or expired) session cannot be attributed to
-    // an account. Do not guess even if only one account is currently active.
-    if (options?.encryptedContent && ttl > 0 && !pin) {
+    // Ciphertext without an owner cannot establish who issued it. TTL=0 does
+    // not grant permission to guess from whichever account happens to be active.
+    if (options?.encryptedContent && !owner) {
       affinityLog("affinity_unavailable", identity, null, options?.requestId, "encrypted_content_without_pin");
-      return { affinityUnavailable: true, reason: "encrypted_content without an active pin" };
+      return { affinityUnavailable: true, reason: "encrypted_content without an active pin", retryable: false };
     }
 
     // Checked after the pin so an encrypted-content request whose pinned
@@ -418,11 +424,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     let connection;
     let affinity = "none";
-    if (pin) {
-      connection = availableConnections.find(c => c.id === pin.connectionId);
+    if (owner) {
+      connection = availableConnections.find(c => c.id === owner.connectionId);
       affinity = "hit";
-      await setPin(identity, connection.id, ttl); // sliding TTL
-      affinityLog("affinity_hit", identity, connection.id, options?.requestId);
     }
     // Pin to preferred connection if specified and available
     if (!connection && preferredConnectionId) {
@@ -477,13 +481,39 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       connection = availableConnections[0];
     }
 
+    if (identity && !owner) {
+      let claimed;
+      try {
+        claimed = await claimOwner(identity, connection.id);
+      } catch {
+        affinityLog("affinity_unavailable", identity, null, options?.requestId, "owner_storage_unavailable");
+        return { affinityUnavailable: true, reason: "session ownership storage unavailable", retryable: true };
+      }
+      if (claimed.owner.invalid) {
+        affinityLog("affinity_unavailable", identity, null, options?.requestId, "invalid_owner");
+        return { affinityUnavailable: true, reason: "invalid original account mapping", retryable: false };
+      }
+      // A different worker may have won the SQLite insert. Never dispatch the
+      // losing candidate's credentials or proxy configuration.
+      connection = availableConnections.find(c => c.id === claimed.owner.connectionId);
+      if (!connection) {
+        affinityLog("affinity_unavailable", identity, claimed.owner.connectionId, options?.requestId, "pinned_unavailable_or_locked");
+        return { affinityUnavailable: true, reason: "pinned account unavailable_or_locked", retryable: true };
+      }
+      affinity = claimed.created ? "created" : "hit";
+    }
+    throwIfAborted(signal);
+    if (identity) {
+      try {
+        if (ttl > 0) await setPin(identity, connection.id, ttl);
+      } catch {
+        affinityLog("affinity_unavailable", identity, connection.id, options?.requestId, "lease_storage_unavailable");
+        return { affinityUnavailable: true, reason: "session ownership storage unavailable", retryable: true };
+      }
+      affinityLog(affinity === "created" ? "affinity_created" : "affinity_hit", identity, connection.id, options?.requestId);
+    }
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
     throwIfAborted(signal);
-    if (identity && ttl > 0 && !pin) {
-      await setPin(identity, connection.id, ttl);
-      affinity = "created";
-      affinityLog("affinity_created", identity, connection.id, options?.requestId);
-    }
 
     return {
       authType: connection.authType,

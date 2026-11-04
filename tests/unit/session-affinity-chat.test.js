@@ -35,7 +35,7 @@ vi.mock("open-sse/services/combo.js", () => ({
   handleComboChat: vi.fn(), handleFusionChat: vi.fn(), detectRequiredCapabilities: vi.fn(() => new Set()),
 }));
 vi.mock("open-sse/services/capacityAdapter.js", () => ({
-  augmentModelsWithCapacityAdapter: (models) => models,
+  augmentModelsWithCapacityAdapter: vi.fn((models) => models),
   withCapacityAdapterStripping: (fn) => fn,
   getActiveAdapterStrategy: vi.fn(),
 }));
@@ -62,6 +62,8 @@ vi.mock("@/sse/services/sessionAffinity.js", async (importOriginal) => ({
 const { handleChat } = await import("@/sse/handlers/chat.js");
 const { getComboModels } = await import("@/sse/services/model.js");
 const { getSettings } = await import("@/lib/localDb");
+const { augmentModelsWithCapacityAdapter } = await import("open-sse/services/capacityAdapter.js");
+const { handleComboChat } = await import("open-sse/services/combo.js");
 
 const ENCRYPTED_BODY = {
   model: "cx/gpt-5.5",
@@ -87,36 +89,82 @@ beforeEach(() => {
 });
 
 describe("chat handler session affinity", () => {
-  it("returns 409 when the pinned (hit) account fails and fallback would switch", async () => {
-    mocks.getProviderCredentials.mockResolvedValueOnce(creds("conn-aaaa-1", "hit"));
+  it.each(["hit", "created"])("retains a %s explicit owner after upstream failure", async (affinity) => {
+    mocks.getProviderCredentials.mockResolvedValueOnce(creds("conn-aaaa-1", affinity));
     mocks.handleChatCore.mockResolvedValueOnce(fail(429));
 
-    const res = await handleChat(chatRequest(ENCRYPTED_BODY));
+    const res = await handleChat(chatRequest({ model: "cx/gpt-5.5", input: "hi" }));
     expect(res.status).toBe(409);
     expect((await res.json()).error.code).toBe("session_affinity_unavailable");
     expect(mocks.getProviderCredentials).toHaveBeenCalledTimes(1);
-    expect(mocks.clearPin).toHaveBeenCalledWith(expect.anything(), "conn-aaaa-1");
+    expect(mocks.clearPin).not.toHaveBeenCalled();
     expect(mocks.affinityLog).toHaveBeenCalledWith("affinity_unavailable", expect.anything(),
       "conn-aaaa-1", "req-1", "pinned_upstream_429");
   });
 
-  it("falls back normally for an unencrypted request with a newly created pin", async () => {
-    mocks.getProviderCredentials
-      .mockResolvedValueOnce(creds("conn-aaaa-1", "created"))
-      .mockResolvedValueOnce(creds("conn-bbbb-2", "created"));
-    mocks.handleChatCore.mockResolvedValueOnce(fail(429)).mockResolvedValueOnce(ok());
-
-    const res = await handleChat(chatRequest({ model: "cx/gpt-5.5", input: "hi" }));
-    expect(res.status).toBe(200);
-    expect(res.headers.get("x-9router-connection-id")).toBe("conn-bbb");
-    expect(res.headers.get("x-9router-affinity")).toBe("created");
-  });
-
-  it("returns 409 when auth reports the existing pin is unavailable", async () => {
-    mocks.getProviderCredentials.mockResolvedValueOnce({ affinityUnavailable: true, reason: "pinned account excluded" });
+  it("returns 409 without clearing a pinned owner when ciphertext fails", async () => {
+    mocks.getProviderCredentials.mockResolvedValueOnce(creds("conn-aaaa-1", "hit"));
+    mocks.handleChatCore.mockResolvedValueOnce(fail(429));
     const res = await handleChat(chatRequest(ENCRYPTED_BODY));
     expect(res.status).toBe(409);
-    expect((await res.json()).error.message).toContain("pinned account excluded");
+    expect(mocks.clearPin).not.toHaveBeenCalled();
+  });
+
+  it("falls back normally for a sessionless request", async () => {
+    mocks.getProviderCredentials
+      .mockResolvedValueOnce(creds("conn-aaaa-1"))
+      .mockResolvedValueOnce(creds("conn-bbbb-2"));
+    mocks.handleChatCore.mockResolvedValueOnce(fail(429)).mockResolvedValueOnce(ok());
+
+    const res = await handleChat(chatRequest({ model: "cx/gpt-5.5", input: "hi" }, {}));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-9router-connection-id")).toBe("conn-bbb");
+    expect(mocks.getProviderCredentials).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports temporarily unavailable owner as retryable without switching", async () => {
+    mocks.getProviderCredentials.mockResolvedValueOnce({ affinityUnavailable: true, reason: "pinned account excluded", retryable: true });
+    const res = await handleChat(chatRequest(ENCRYPTED_BODY));
+    expect(res.status).toBe(409);
+    const error = (await res.json()).error;
+    expect(error.message).toContain("pinned account excluded");
+    expect(error.message).toContain("retry the same session");
+    expect(error.message).not.toContain("Start a new session");
+    expect(mocks.clearPin).not.toHaveBeenCalled();
+    expect(mocks.handleChatCore).not.toHaveBeenCalled();
+  });
+
+  it("rejects newly created credentials for ciphertext even if selection claims success", async () => {
+    mocks.getProviderCredentials.mockResolvedValueOnce(creds("conn-aaaa-1", "created"));
+    const res = await handleChat(chatRequest(ENCRYPTED_BODY));
+    expect(res.status).toBe(409);
+    expect(mocks.handleChatCore).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 and retains owner when upstream throws after a claim", async () => {
+    mocks.getProviderCredentials.mockResolvedValueOnce(creds("conn-aaaa-1", "created"));
+    mocks.handleChatCore.mockRejectedValueOnce(new Error("upstream disconnected"));
+    const res = await handleChat(chatRequest({ model: "cx/gpt-5.5", input: "hi" }));
+    expect(res.status).toBe(409);
+    expect((await res.json()).error.message).toContain("retry the same session");
+    expect(mocks.getProviderCredentials).toHaveBeenCalledTimes(1);
+    expect(mocks.clearPin).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 without choosing another account if credential selection throws", async () => {
+    mocks.getProviderCredentials.mockRejectedValueOnce(new Error("owner storage unavailable"));
+    const res = await handleChat(chatRequest({ model: "cx/gpt-5.5", input: "hi" }));
+    expect(res.status).toBe(409);
+    expect(mocks.getProviderCredentials).toHaveBeenCalledTimes(1);
+    expect(mocks.handleChatCore).not.toHaveBeenCalled();
+  });
+
+  it("does not convert a client abort into a session-affinity conflict", async () => {
+    mocks.getProviderCredentials.mockResolvedValueOnce(creds("conn-aaaa-1", "hit"));
+    mocks.handleChatCore.mockRejectedValueOnce(new DOMException("Aborted", "AbortError"));
+    const res = await handleChat(chatRequest({ model: "cx/gpt-5.5", input: "hi" }));
+    expect(res.status).toBe(499);
+    expect(mocks.clearPin).not.toHaveBeenCalled();
   });
 
   it("returns 409 before selection when encrypted_content has no session key", async () => {
@@ -135,6 +183,38 @@ describe("chat handler session affinity", () => {
     expect(mocks.handleChatCore).not.toHaveBeenCalled();
   });
 
+  it("requires a pinned owner for ciphertext even when affinity TTL is disabled", async () => {
+    vi.stubEnv("NINEROUTER_SESSION_AFFINITY_TTL_MS", "0");
+    try {
+      const res = await handleChat(chatRequest(ENCRYPTED_BODY, {}));
+      expect(res.status).toBe(409);
+      expect(mocks.getProviderCredentials).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("disables combo fallback for an explicit plaintext session", async () => {
+    getComboModels.mockResolvedValueOnce(["cx/gpt-5.5", "other/model-b"]);
+    await handleChat(chatRequest({ model: "combo-model", input: "hi" }));
+    expect(handleComboChat).toHaveBeenCalledWith(expect.objectContaining({ allowFallback: false }));
+  });
+
+  it("keeps combo fallback for sessionless plaintext requests", async () => {
+    getComboModels.mockResolvedValueOnce(["cx/gpt-5.5", "other/model-b"]);
+    await handleChat(chatRequest({ model: "combo-model", input: "hi" }, {}));
+    expect(handleComboChat).toHaveBeenCalledWith(expect.objectContaining({ allowFallback: true }));
+  });
+
+  it("refuses encrypted combo fallback before any provider sees ciphertext", async () => {
+    getComboModels.mockResolvedValueOnce(["cx/gpt-5.5", "gemini-cli/gemini-2.5-pro"]);
+    const res = await handleChat(chatRequest(ENCRYPTED_BODY));
+    expect(res.status).toBe(409);
+    expect((await res.json()).error.code).toBe("session_affinity_unavailable");
+    expect(mocks.getProviderCredentials).not.toHaveBeenCalled();
+    expect(mocks.handleChatCore).not.toHaveBeenCalled();
+  });
+
   it("refuses fusion fan-out for encrypted_content", async () => {
     getComboModels.mockResolvedValueOnce(["cx/gpt-5.5", "cx/gpt-5.4"]);
     getSettings.mockResolvedValueOnce({ requireApiKey: false, comboStrategy: "fusion" });
@@ -142,6 +222,16 @@ describe("chat handler session affinity", () => {
     expect(res.status).toBe(409);
     expect(mocks.getProviderCredentials).not.toHaveBeenCalled();
     expect(mocks.affinityLog).toHaveBeenCalledWith("affinity_unavailable", null, null, "req-1", "fusion_with_encrypted_content");
+  });
+
+  it("does not switch explicit sessions to a capacity adapter", async () => {
+    augmentModelsWithCapacityAdapter.mockReturnValueOnce(["cx/gpt-5.5", "other/vision"]);
+    mocks.getProviderCredentials.mockResolvedValueOnce(creds("conn-aaaa-1", "hit"));
+    mocks.handleChatCore.mockResolvedValueOnce(ok());
+    const res = await handleChat(chatRequest({ model: "cx/gpt-5.5", input: "hi" }));
+    expect(res.status).toBe(200);
+    expect(handleComboChat).not.toHaveBeenCalled();
+    expect(mocks.getProviderCredentials).toHaveBeenCalledTimes(1);
   });
 
   it("passes session key and request id into credential selection and sets headers on hit", async () => {

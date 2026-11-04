@@ -21,7 +21,8 @@ import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
-import { extractSessionKey, containsEncryptedContent, affinityIdentity, affinityTtlMs, clearPin, affinityLog, withAffinityHeaders, affinityUnavailableResponse } from "../services/sessionAffinity.js";
+import { extractSessionKey, containsEncryptedContent, affinityIdentity, affinityLog, withAffinityHeaders, affinityUnavailableResponse } from "../services/sessionAffinity.js";
+import { isAbortError } from "open-sse/utils/abort.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
@@ -98,6 +99,7 @@ export async function handleChat(request, clientRawRequest = null) {
   if (bypassResponse) return bypassResponse.response || bypassResponse;
 
   const requiredCapabilities = detectRequiredCapabilities(body);
+  const encryptedContent = containsEncryptedContent(body);
 
   // Check if model is a combo (has multiple models with fallback)
   const comboModels = await getComboModels(modelStr);
@@ -106,15 +108,18 @@ export async function handleChat(request, clientRawRequest = null) {
     const comboStrategies = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
     const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
+    // A combo can change providers before it reaches credential selection. The
+    // original owner cannot be inferred safely from ciphertext alone.
+    if (encryptedContent) {
+      const requestId = request.headers.get("x-request-id") || request.headers.get("x-correlation-id") || monitoring?.correlationId;
+      affinityLog("affinity_unavailable", null, null, requestId,
+        comboStrategy === "fusion" ? "fusion_with_encrypted_content" : "combo_with_encrypted_content");
+      return affinityUnavailableResponse("encrypted_content must target its original pinned provider/model, not a combo");
+    }
     const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings);
     const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
 
     if (comboStrategy === "fusion") {
-      if (affinityTtlMs(settings) > 0 && containsEncryptedContent(body)) {
-        const requestId = request.headers.get("x-request-id") || request.headers.get("x-correlation-id") || monitoring?.correlationId;
-        affinityLog("affinity_unavailable", null, null, requestId, "fusion_with_encrypted_content");
-        return affinityUnavailableResponse("fusion cannot safely route encrypted_content across accounts");
-      }
       let fusionAttempt = 0;
       log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
       return handleFusionChat({
@@ -158,6 +163,7 @@ export async function handleChat(request, clientRawRequest = null) {
       comboName: modelStr,
       comboStrategy,
       comboStickyLimit,
+      allowFallback: !extractSessionKey(request?.headers, body),
       signal: request?.signal
     });
   }
@@ -165,7 +171,8 @@ export async function handleChat(request, clientRawRequest = null) {
   // Single model request — may still switch to a capacity-adapter model if the
   // target lacks a capability the request needs (e.g. no vision, request has an image).
   const soloAugmented = augmentModelsWithCapacityAdapter([modelStr], requiredCapabilities, settings);
-  if (soloAugmented.length > 1) {
+  // A session owner must not be silently replaced by a capacity adapter.
+  if (soloAugmented.length > 1 && !extractSessionKey(request?.headers, body)) {
     const adapterAdded = soloAugmented.filter((m) => m !== modelStr);
     log.info("CHAT", `Capacity adapter for [${[...requiredCapabilities].join(",")}] on "${modelStr}" → trying ${soloAugmented.join(", ")}`);
     return handleComboChat({
@@ -212,16 +219,17 @@ async function handleSingleModelChat(
       const comboStrategies = chatSettings.comboStrategies || {};
       const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
       const comboStrategy = comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
+      if (containsEncryptedContent(body)) {
+        const requestId = request?.headers?.get("x-request-id") || request?.headers?.get("x-correlation-id") || monitoring?.correlationId;
+        affinityLog("affinity_unavailable", null, null, requestId,
+          comboStrategy === "fusion" ? "fusion_with_encrypted_content" : "combo_with_encrypted_content");
+        return affinityUnavailableResponse("encrypted_content must target its original pinned provider/model, not a combo");
+      }
       const requiredCapabilities = detectRequiredCapabilities(body);
       const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, chatSettings);
       const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
 
       if (comboStrategy === "fusion") {
-        if (affinityTtlMs(chatSettings) > 0 && containsEncryptedContent(body)) {
-          const requestId = request?.headers?.get("x-request-id") || request?.headers?.get("x-correlation-id") || monitoring?.correlationId;
-          affinityLog("affinity_unavailable", null, null, requestId, "fusion_with_encrypted_content");
-          return affinityUnavailableResponse("fusion cannot safely route encrypted_content across accounts");
-        }
         let fusionAttempt = 0;
         log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
         return handleFusionChat({
@@ -265,6 +273,7 @@ async function handleSingleModelChat(
         comboName: modelStr,
         comboStrategy,
         comboStickyLimit,
+        allowFallback: !extractSessionKey(request?.headers, body),
         signal: signal || request?.signal
       });
     }
@@ -273,11 +282,10 @@ async function handleSingleModelChat(
   }
 
   const { provider, model } = modelInfo;
-  const affinityEnabled = affinityTtlMs(await getSettings()) > 0;
-  const encryptedContent = affinityEnabled && containsEncryptedContent(body);
+  const encryptedContent = containsEncryptedContent(body);
   const sessionKey = extractSessionKey(request?.headers, body);
   const requestId = request?.headers?.get("x-request-id") || request?.headers?.get("x-correlation-id") || monitoring?.correlationId;
-  const identity = affinityEnabled ? affinityIdentity(sessionKey, provider, apiKey) : null;
+  const identity = affinityIdentity(sessionKey, provider, apiKey);
   if (encryptedContent && !identity) {
     affinityLog("affinity_unavailable", null, null, requestId, "missing_session_key");
     log.warn("AFFINITY", "encrypted_content without session key; refusing unpinned routing");
@@ -296,10 +304,25 @@ async function handleSingleModelChat(
   let accountAttempt = 0;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
-      sessionKey, apiKey, encryptedContent, requestId,
-    });
-    if (credentials?.affinityUnavailable) return affinityUnavailableResponse(credentials.reason);
+    let credentials;
+    try {
+      credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+        sessionKey, apiKey, encryptedContent, requestId, signal: signal || request?.signal,
+      });
+    } catch (error) {
+      if (isAbortError(error, signal || request?.signal)) {
+        return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+      }
+      if (!sessionKey) throw error;
+      affinityLog("affinity_unavailable", identity, null, requestId, "owner_selection_failed");
+      return affinityUnavailableResponse("session owner selection failed", true);
+    }
+    if (credentials?.affinityUnavailable) return affinityUnavailableResponse(credentials.reason, credentials.retryable);
+    // Ciphertext can only be replayed on an owner established by a prior turn.
+    if (encryptedContent && credentials && credentials.affinity !== "hit") {
+      affinityLog("affinity_unavailable", identity, credentials.connectionId, requestId, "encrypted_content_without_owner");
+      return affinityUnavailableResponse("encrypted_content requires an existing owner pin");
+    }
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -320,7 +343,17 @@ async function handleSingleModelChat(
     // Account selection shown in the unified "▶" line (acc:...)
     accountAttempt += 1;
     const attemptStartedAt = Date.now();
-    const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+    let refreshedCredentials;
+    try {
+      refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+    } catch (error) {
+      if (isAbortError(error, signal || request?.signal)) {
+        return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+      }
+      if (!sessionKey) throw error;
+      affinityLog("affinity_unavailable", identity, credentials.connectionId, requestId, "owner_refresh_failed");
+      return affinityUnavailableResponse("pinned account refresh failed", true);
+    }
 
     // Ensure real project ID is available for providers that need it (P0 fix: cold miss)
     if ((provider === "antigravity" || provider === "gemini-cli") && !refreshedCredentials.projectId) {
@@ -380,17 +413,21 @@ async function handleSingleModelChat(
         }
       });
     } catch (error) {
+      const aborted = isAbortError(error, signal || request?.signal);
       emitGatewayAttempt(buildGatewayAttemptLog({
         monitoring,
         provider,
         model,
         account: credentials.connectionName || credentials.connectionId,
         accountAttempt,
-        status: HTTP_STATUS.SERVER_ERROR,
+        status: aborted ? HTTP_STATUS.CLIENT_CLOSED_REQUEST : HTTP_STATUS.SERVER_ERROR,
         success: false,
         startTime: attemptStartedAt,
       }));
-      throw error;
+      if (aborted) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+      if (!sessionKey) throw error;
+      affinityLog("affinity_unavailable", identity, credentials.connectionId, requestId, "owner_request_failed");
+      return affinityUnavailableResponse("pinned account request failed", true);
     }
 
     emitGatewayAttempt(buildGatewayAttemptLog({
@@ -424,15 +461,10 @@ async function handleSingleModelChat(
       : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs)).shouldFallback;
 
     if (shouldFallback) {
-      if (identity && await clearPin(identity, credentials.connectionId)) {
-        affinityLog("affinity_cleared", identity, credentials.connectionId, requestId, `upstream_${result.status}`);
-      }
-      // Only an existing pin ("hit") proves which account issued the ciphertext.
-      // A pin created on this request carries no such evidence, so fall back normally.
-      if (encryptedContent && credentials.affinity === "hit") {
+      if (sessionKey) {
         affinityLog("affinity_unavailable", identity, credentials.connectionId, requestId, `pinned_upstream_${result.status}`);
-        log.warn("AFFINITY", `pinned account failed (${result.status}); refusing account switch for encrypted_content`);
-        return affinityUnavailableResponse(`pinned account failed with upstream ${result.status}`);
+        log.warn("AFFINITY", `session owner failed (${result.status}); retaining owner and refusing account switch`);
+        return affinityUnavailableResponse(`pinned account failed with upstream ${result.status}`, true);
       }
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
       excludeConnectionIds.add(credentials.connectionId);
