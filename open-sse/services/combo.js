@@ -620,12 +620,14 @@ export async function handleComboChat({
       const receivedAt = Date.now();
       let retryAfter = parseRetryDeadline(result.headers?.get?.("Retry-After"), receivedAt, true);
       let errorBodyText = "";
+      let diagnosticComplete = false;
       try {
-        errorBodyText = await readUpstreamBodyText(result, {
+        errorBodyText = await readUpstreamBodyText(result.clone(), {
           signal,
           maxBytes: COMBO_ERROR_BODY_MAX_BYTES,
           stallTimeoutMs: COMBO_ERROR_BODY_STALL_TIMEOUT_MS,
         });
+        diagnosticComplete = true;
         const errorBody = JSON.parse(errorBodyText);
         errorText = errorBody?.error?.message || errorBody?.error || errorBody?.message || errorText;
         if (typeof errorBody?.error?.code === "string") errorCode = errorBody.error.code;
@@ -635,14 +637,13 @@ export async function handleComboChat({
         // Ignore malformed, stalled, or oversized diagnostics. Caller abort is
         // checked below; the bounded reader already cancelled failed bodies.
       }
-      // The bounded reader cancels bodies it cannot consume. Never turn that
-      // failure into a 400 with an empty body; return a bounded diagnostic
-      // instead when this attempt is the final response.
-      result = errorBodyText
-        ? rebuildUpstreamResponse(result, errorBodyText)
-        : result.bodyUsed
-          ? rebuildUpstreamResponse(result, JSON.stringify({ error: { message: errorText || `Upstream HTTP ${result.status}` } }))
-          : result;
+      // Keep the original response when diagnostics fit, including malformed
+      // JSON. Failed reads cancel both tee branches; never retain an unbounded
+      // original or await tee cancellation before cancelling its other branch.
+      if (!diagnosticComplete && result.body) {
+        discardResponseBody(result, "Combo diagnostic read failed");
+        result = rebuildUpstreamResponse(result, JSON.stringify({ error: { message: errorText || `Upstream HTTP ${result.status}` } }));
+      }
 
       // A failed owner must never cause a second provider to receive this session.
       if (errorCode === "session_affinity_unavailable") return result;
