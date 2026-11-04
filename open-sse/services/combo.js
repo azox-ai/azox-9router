@@ -5,7 +5,7 @@
 import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { isAbortError, throwIfAborted, waitWithSignal } from "../utils/abort.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
-import { errorResponse } from "../utils/error.js";
+import { errorResponse, readUpstreamBodyText } from "../utils/error.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { parseModel } from "./model.js";
@@ -40,6 +40,27 @@ const HARD_CAPS = new Set(["vision", "pdf", "audioInput", "videoInput"]);
 // Prefixes used when flattening tool turns into plain prose for panel models.
 const TOOL_CALL_PREFIX = "[Called tools: ";
 const TOOL_RESULT_PREFIX = "[Tool result: ";
+
+const COMBO_ERROR_BODY_MAX_BYTES = 256 * 1024;
+const COMBO_ERROR_BODY_STALL_TIMEOUT_MS = 5000;
+const FUSION_PANEL_BODY_MAX_BYTES = 8 * 1024 * 1024;
+const FUSION_PANEL_BODY_STALL_TIMEOUT_MS = 15_000;
+const FUSION_JUDGE_TEXT_MAX_CHARS = 16 * 1024 * 1024;
+
+function rebuildUpstreamResponse(response, text) {
+  const headers = new Headers(response.headers);
+  for (const name of ["content-length", "content-encoding", "transfer-encoding", "digest", "content-digest", "repr-digest", "content-md5", "etag", "content-range", "trailer"]) headers.delete(name);
+  headers.set("content-type", "application/json; charset=utf-8");
+  return new Response(text, { status: response.status, statusText: response.statusText, headers });
+}
+
+function discardResponseBody(response, reason) {
+  if (!response?.body || response.bodyUsed === true) return;
+  try {
+    const cancellation = response.body.cancel(reason);
+    cancellation?.catch?.(() => {});
+  } catch { /* best-effort connection release */ }
+}
 
 // Flatten tool turns into prose so panel models keep the context but can't loop
 // on tools: drop the request's tools, turn tool/function results into assistant
@@ -355,6 +376,26 @@ export function isZeroContentResponse(data) {
  * @param {Function|null} [options.resolveSmartChoice=null] - Smart router resolver callback: (body, models) => Promise<{ choice, probabilities, confidence } | null>
  * @returns {Promise<Response>}
  */
+// HTTP Retry-After supports delay-seconds or dates; the legacy JSON field is a
+// timestamp. Reject malformed/overflow dates before they enter the minimum.
+function parseRetryDeadline(value, receivedAt, allowDelaySeconds = false) {
+  // The legacy JSON field may be an epoch timestamp number. HTTP Retry-After
+  // remains string-only and may additionally use delay-seconds.
+  if (typeof value === "number") {
+    return !allowDelaySeconds && Number.isFinite(value) ? value : null;
+  }
+  if (typeof value !== "string" || !value.trim()) return null;
+  const text = value.trim();
+  let deadline;
+  if (allowDelaySeconds && /^\d+$/.test(text)) {
+    deadline = receivedAt + Number(text) * 1000;
+  } else {
+    if (!Number.isNaN(Number(text))) return null;
+    deadline = Date.parse(text);
+  }
+  return Number.isFinite(new Date(deadline).getTime()) ? deadline : null;
+}
+
 export async function handleComboChat({
   body,
   models,
@@ -471,9 +512,9 @@ export async function handleComboChat({
   }
   
   let allCredentialsUnavailable = rotatedModels.length > 0;
-  let lastError = null;
+  let lastFailure = null;
+  let retryableFailure = null;
   let earliestRetryAfter = null;
-  let lastStatus = null;
   let requestScopedResult = null;
 
   for (let i = 0; i < rotatedModels.length; i++) {
@@ -482,13 +523,13 @@ export async function handleComboChat({
 
     try {
       throwIfAborted(signal);
-      const result = await handleSingleModel(body, modelStr, {
+      let result = await handleSingleModel(body, modelStr, {
         combo: comboName || null,
         attempt: i + 1,
       });
       
       if (signal?.aborted) {
-        result.body?.cancel?.().catch(() => {});
+        discardResponseBody(result, "combo request aborted");
         return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
       }
       if (result.status === HTTP_STATUS.CLIENT_CLOSED_REQUEST || !allowFallback) return result;
@@ -527,8 +568,8 @@ export async function handleComboChat({
                   if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
                     clearStickyComboSession(comboName, sessionId);
                   }
-                  lastError = "Zero usable content";
-                  lastStatus = 200;
+                  allCredentialsUnavailable = false;
+                  lastFailure = { status: 200, message: "Zero usable content" };
                   continue;
                 }
               } catch {
@@ -562,8 +603,8 @@ export async function handleComboChat({
         }
         // Drain/close the discarded stream in the background so its usage logging still runs.
         peeked.response.body?.cancel?.().catch(() => {});
-        lastError = `empty generation (${reasonLabel})`;
-        if (!lastStatus) lastStatus = 502;
+        allCredentialsUnavailable = false;
+        lastFailure = { status: 502, message: `empty generation (${reasonLabel})` };
         continue;
       }
 
@@ -575,22 +616,39 @@ export async function handleComboChat({
 
       // Extract error info from response
       let errorText = result.statusText || "";
-      let retryAfter = null;
       let errorCode = null;
+      const receivedAt = Date.now();
+      let retryAfter = parseRetryDeadline(result.headers?.get?.("Retry-After"), receivedAt, true);
+      let errorBodyText = "";
       try {
-        const errorBody = await result.clone().json();
+        errorBodyText = await readUpstreamBodyText(result, {
+          signal,
+          maxBytes: COMBO_ERROR_BODY_MAX_BYTES,
+          stallTimeoutMs: COMBO_ERROR_BODY_STALL_TIMEOUT_MS,
+        });
+        const errorBody = JSON.parse(errorBodyText);
         errorText = errorBody?.error?.message || errorBody?.error || errorBody?.message || errorText;
-        retryAfter = errorBody?.retryAfter || null;
-        errorCode = errorBody?.error?.code || null;
+        if (typeof errorBody?.error?.code === "string") errorCode = errorBody.error.code;
+        const jsonRetryAfter = parseRetryDeadline(errorBody?.retryAfter, receivedAt);
+        if (jsonRetryAfter !== null && (retryAfter === null || jsonRetryAfter < retryAfter)) retryAfter = jsonRetryAfter;
       } catch {
-        // Ignore JSON parse errors
+        // Ignore malformed, stalled, or oversized diagnostics. Caller abort is
+        // checked below; the bounded reader already cancelled failed bodies.
       }
+      // The bounded reader cancels bodies it cannot consume. Never turn that
+      // failure into a 400 with an empty body; return a bounded diagnostic
+      // instead when this attempt is the final response.
+      result = errorBodyText
+        ? rebuildUpstreamResponse(result, errorBodyText)
+        : result.bodyUsed
+          ? rebuildUpstreamResponse(result, JSON.stringify({ error: { message: errorText || `Upstream HTTP ${result.status}` } }))
+          : result;
 
       // A failed owner must never cause a second provider to receive this session.
       if (errorCode === "session_affinity_unavailable") return result;
 
       // Track earliest retryAfter across all combo models
-      if (retryAfter && (!earliestRetryAfter || new Date(retryAfter) < new Date(earliestRetryAfter))) {
+      if (retryAfter !== null && (earliestRetryAfter === null || retryAfter < earliestRetryAfter)) {
         earliestRetryAfter = retryAfter;
       }
 
@@ -599,6 +657,8 @@ export async function handleComboChat({
         try { errorText = JSON.stringify(errorText); } catch { errorText = String(errorText); }
       }
 
+      allCredentialsUnavailable &&= result.status === HTTP_STATUS.NOT_FOUND
+        && /^no (?:active )?credentials for provider(?::|\s)/i.test(errorText.trim());
       throwIfAborted(signal);
       // Check if should fallback to next model
       const { provider } = parseModel(modelStr);
@@ -618,8 +678,7 @@ export async function handleComboChat({
       // request-scoped fault must not evict a healthy account from rotation).
       if (requestScoped) {
         log.warn("COMBO", `Model ${modelStr} rejected the request (${result.status}), trying next`, { status: result.status });
-        lastError = errorText || String(result.status);
-        if (!lastStatus) lastStatus = result.status;
+        lastFailure = { status: result.status, message: errorText || String(result.status), ...(errorCode ? { code: errorCode } : {}) };
         if (!requestScopedResult) requestScopedResult = result;
         continue;
       }
@@ -634,8 +693,8 @@ export async function handleComboChat({
       }
 
       // Fallback to next model
-      lastError = errorText || String(result.status);
-      if (!lastStatus) lastStatus = result.status;
+      lastFailure = { status: result.status, message: errorText || String(result.status), ...(errorCode ? { code: errorCode } : {}) };
+      if (result.status === HTTP_STATUS.RATE_LIMITED || result.status >= HTTP_STATUS.SERVER_ERROR) retryableFailure = lastFailure;
       log.warn("COMBO", `Model ${modelStr} failed, trying next`, { status: result.status });
     } catch (error) {
       if (isAbortError(error, signal)) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
@@ -650,9 +709,9 @@ export async function handleComboChat({
       if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
         clearStickyComboSession(comboName, sessionId);
       }
-      lastError = error.message || String(error);
-      if (!lastStatus) lastStatus = 500;
-      log.warn("COMBO", `Model ${modelStr} threw error, trying next`, { error: lastError });
+      lastFailure = { status: HTTP_STATUS.SERVER_ERROR, message: String(error?.message || error) };
+      retryableFailure = lastFailure;
+      log.warn("COMBO", `Model ${modelStr} threw error, trying next`, { error: lastFailure.message });
     }
   }
 
@@ -670,19 +729,22 @@ export async function handleComboChat({
   // Use 503 (Service Unavailable) rather than 406 (Not Acceptable) — 406 implies
   // the request itself is invalid, but here the providers are simply unavailable
   // or have no active credentials. 503 is more accurate and retryable by clients.
-  const allDisabled = lastError && lastError.toLowerCase().includes("no credentials");
-  const status = allDisabled ? 503 : (lastStatus || 503);
-  const msg = lastError || "All combo models unavailable";
+  // Keep status/message from the same attempt. A temporarily unavailable route
+  // remains retryable even if another model rejects this request's tools.
+  const failure = retryableFailure || lastFailure;
+  const status = allCredentialsUnavailable ? HTTP_STATUS.SERVICE_UNAVAILABLE : (failure?.status || HTTP_STATUS.SERVICE_UNAVAILABLE);
+  const msg = failure?.message || "All combo models unavailable";
 
-  if (earliestRetryAfter) {
-    const retryHuman = formatRetryAfter(earliestRetryAfter);
+  if (earliestRetryAfter !== null) {
+    const retryAt = new Date(earliestRetryAfter).toISOString();
+    const retryHuman = formatRetryAfter(retryAt);
     log.warn("COMBO", `All models failed | ${msg} (${retryHuman})`);
-    return unavailableResponse(status, msg, earliestRetryAfter, retryHuman);
+    return unavailableResponse(status, msg, retryAt, retryHuman);
   }
 
   log.warn("COMBO", `All models failed | ${msg}`);
   return new Response(
-    JSON.stringify({ error: { message: msg } }),
+    JSON.stringify({ error: { message: msg, ...(!allCredentialsUnavailable && failure?.code ? { code: failure.code } : {}) } }),
     { status, headers: { "Content-Type": "application/json" } }
   );
 }
@@ -781,14 +843,38 @@ const FUSION_DEFAULTS = {
   panelHardTimeoutMs: 90000, // absolute cap so one hung model can't stall forever
 };
 
-// Resolve a Response (or {__error}) within ms; the loser keeps running but is ignored.
-function withTimeout(promise, ms) {
-  return new Promise((resolve) => {
-    const t = setTimeout(() => resolve({ __timeout: true }), ms);
-    Promise.resolve(promise)
-      .then((v) => { clearTimeout(t); resolve(v); })
-      .catch((e) => { clearTimeout(t); resolve({ __error: e }); });
+// Resolve a Response (or {__error}) within ms and signal the underlying call
+// when it loses the timeout race. The promise remains observed so a late abort
+// rejection cannot become unhandled.
+function withTimeout(promise, ms, onTimeout) {
+  let cancel;
+  const wrapped = new Promise((resolve) => {
+    let finished = false;
+    let timer = null;
+    const finish = (value) => {
+      if (finished) {
+        // A provider may ignore the panel abort and resolve after quorum or the
+        // hard timeout. Its late Response is no longer observable by callers,
+        // so explicitly release the body instead of leaving it to GC.
+        discardResponseBody(value, "late fusion panel response");
+        return;
+      }
+      finished = true;
+      if (timer) clearTimeout(timer);
+      resolve(value);
+    };
+    cancel = () => finish({ __cancelled: true });
+    timer = setTimeout(() => {
+      try { onTimeout?.(); } finally { finish({ __timeout: true }); }
+    }, ms);
+    // Keep observing the provider even after cancel() settles this wrapper so
+    // an abort-ignoring call cannot produce an unhandled late rejection.
+    Promise.resolve(promise).then(
+      (value) => finish(value),
+      (error) => finish({ __error: error }),
+    );
   });
+  return { promise: wrapped, cancel: () => cancel?.() };
 }
 
 /**
@@ -798,33 +884,62 @@ function withTimeout(promise, ms) {
  * still preferring a full panel when everyone is fast. Bounded by a hard timeout.
  * Returns a sparse array aligned to `calls` (undefined = not yet / dropped).
  */
-function collectPanel(calls, { minPanel, stragglerGraceMs, panelHardTimeoutMs }) {
+function collectPanel(calls, { minPanel, stragglerGraceMs, panelHardTimeoutMs, signal, onFinish }) {
   return new Promise((resolve) => {
     const out = new Array(calls.length);
     let settled = 0;
     let ok = 0;
     let finished = false;
     let graceTimer = null;
+    let hardTimer = null;
     const finish = () => {
       if (finished) return;
       finished = true;
       clearTimeout(hardTimer);
       if (graceTimer) clearTimeout(graceTimer);
-      resolve(out);
+      signal?.removeEventListener("abort", finish);
+      try { onFinish?.(); } finally { resolve(out); }
     };
-    const hardTimer = setTimeout(finish, panelHardTimeoutMs);
+    hardTimer = setTimeout(finish, panelHardTimeoutMs);
+    if (signal?.aborted) finish();
+    else signal?.addEventListener("abort", finish, { once: true });
     calls.forEach((p, i) => {
       Promise.resolve(p)
         .then((v) => { out[i] = v; })
         .catch((e) => { out[i] = { __error: e }; })
         .finally(() => {
           settled++;
-          if (out[i] && out[i].ok) ok++;
+          // Quorum is based on a fully consumed, semantically valid answer.
+          // An HTTP 200 header alone is not success: the body may still stall,
+          // be malformed, or contain no assistant content.
+          if (out[i]?.__answer) ok++;
           if (settled === calls.length) return finish();
           if (ok >= minPanel && !graceTimer) graceTimer = setTimeout(finish, stragglerGraceMs);
         });
     });
   });
+}
+
+async function readFusionPanelAnswer(response, model, signal) {
+  if (!response?.ok) {
+    discardResponseBody(response, "failed fusion panel response");
+    return { __failed: true, status: response?.status };
+  }
+
+  try {
+    const bodyText = await readUpstreamBodyText(response, {
+      signal,
+      maxBytes: FUSION_PANEL_BODY_MAX_BYTES,
+      stallTimeoutMs: FUSION_PANEL_BODY_STALL_TIMEOUT_MS,
+      fatalUtf8: true,
+    });
+    const json = JSON.parse(bodyText);
+    const text = extractPanelText(json);
+    if (!text) return { __failed: true, empty: true };
+    return { __answer: { model, text } };
+  } catch (error) {
+    return { __error: error };
+  }
 }
 
 /**
@@ -843,14 +958,15 @@ function collectPanel(calls, { minPanel, stragglerGraceMs, panelHardTimeoutMs })
  * @param {Object} options
  * @param {Object} options.body - Request body (client format)
  * @param {string[]} options.models - Panel model strings
- * @param {Function} options.handleSingleModel - (body, modelStr) => Promise<Response>
+ * @param {Function} options.handleSingleModel - (body, modelStr, isPanel, panelSignal) => Promise<Response>
  * @param {Object} options.log - Logger
  * @param {string} [options.comboName] - Combo name (logging)
  * @param {string} [options.judgeModel] - Judge model; falls back to panel[0]
  * @param {Object} [options.tuning] - Override FUSION_DEFAULTS (minPanel, grace, timeout)
  * @returns {Promise<Response>}
  */
-export async function handleFusionChat({ body, models, handleSingleModel, log, comboName, judgeModel, tuning }) {
+export async function handleFusionChat({ body, models, handleSingleModel, log, comboName, judgeModel, tuning, signal }) {
+  if (signal?.aborted) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
   const panel = Array.isArray(models) ? models.filter(Boolean) : [];
   if (panel.length === 0) {
     return new Response(
@@ -884,34 +1000,68 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   }
 
   const t0 = Date.now();
-  const calls = panel.map((m) => withTimeout(handleSingleModel(panelBody, m, true), cfg.panelHardTimeoutMs));
-  const settled = await collectPanel(calls, { ...cfg, minPanel });
+  const panelTasks = panel.map((m) => {
+    const controller = new AbortController();
+    const panelSignal = controller.signal;
+    const task = { controller, settled: false, promise: null, cancel: null };
+    // Defer invocation into a promise so synchronous provider errors are
+    // isolated to that panel member instead of aborting the whole fan-out.
+    // Keep header receipt, complete bounded body consumption and semantic
+    // validation inside the same per-panel deadline. This also lets quorum
+    // count real answers rather than optimistic HTTP 200 responses.
+    const call = Promise.resolve()
+      .then(() => handleSingleModel(panelBody, m, true, panelSignal))
+      .then((response) => readFusionPanelAnswer(response, m, panelSignal));
+    const timed = withTimeout(call, cfg.panelHardTimeoutMs, () => controller.abort());
+    task.cancel = timed.cancel;
+    task.promise = timed.promise
+      .finally(() => {
+        task.settled = true;
+      });
+    return task;
+  });
+  const abortStragglers = () => {
+    for (const task of panelTasks) {
+      if (!task.settled) {
+        task.controller.abort();
+        // Do not retain the timeout or wait for providers that ignore abort.
+        task.cancel();
+      }
+    }
+  };
+  const settled = await collectPanel(panelTasks.map((task) => task.promise), {
+    ...cfg,
+    minPanel,
+    signal,
+    onFinish: abortStragglers,
+  });
+  if (signal?.aborted) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
   log.info("FUSION", `fan-out collected in ${Date.now() - t0}ms`);
 
   // 2. Collect successful answers.
   const answers = [];
+  let acceptedAnswerChars = 0;
   for (let i = 0; i < settled.length; i++) {
     const res = settled[i];
     const model = panel[i];
     if (!res) { log.warn("FUSION", `Panel ${model} dropped (straggler/timeout)`); continue; }
     if (res.__timeout) { log.warn("FUSION", `Panel ${model} timed out`); continue; }
-    if (res.__error) { log.warn("FUSION", `Panel ${model} threw`, { error: res.__error?.message || String(res.__error) }); continue; }
-    if (!res.ok) { log.warn("FUSION", `Panel ${model} failed`, { status: res.status }); continue; }
-    try {
-      const json = await res.clone().json();
-      const text = extractPanelText(json);
-      if (text) {
-        answers.push({ model, text });
-        log.info("FUSION", `Panel ${model} ok (${text.length} chars)`);
-      } else {
-        log.warn("FUSION", `Panel ${model} returned empty content`);
+    if (res.__error) { log.warn("FUSION", `Panel ${model} failed validation`, { error: res.__error?.message || String(res.__error) }); continue; }
+    if (res.__answer) {
+      if (acceptedAnswerChars + res.__answer.text.length > FUSION_JUDGE_TEXT_MAX_CHARS) {
+        log.warn("FUSION", `Panel ${model} exceeded the aggregate judge-input limit`);
+        continue;
       }
-    } catch (e) {
-      log.warn("FUSION", `Panel ${model} unparseable`, { error: e.message || String(e) });
+      answers.push(res.__answer);
+      acceptedAnswerChars += res.__answer.text.length;
+      log.info("FUSION", `Panel ${model} ok (${res.__answer.text.length} chars)`);
+      continue;
     }
+    log.warn("FUSION", res.empty ? `Panel ${model} returned empty content` : `Panel ${model} failed`, { status: res.status });
   }
 
   // 3. Degrade gracefully when the panel is too thin to fuse.
+  if (signal?.aborted) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
   if (answers.length === 0) {
     log.warn("FUSION", "All panel models failed");
     return new Response(
@@ -929,6 +1079,9 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   log.info("FUSION", `Judging ${answers.length} answers with ${judge}`);
   return handleSingleModel(judgeBody, judge);
 }
+
+// Exposed for regression tests only; not part of the module's runtime contract.
+export const __test__ = { parseRetryDeadline };
 
 export {
   getStickyComboModel,

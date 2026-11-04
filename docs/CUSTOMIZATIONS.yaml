@@ -260,6 +260,42 @@
     "known_review_limits": "Candidate combo success JSON peeks/fusion panel reads remain upstream behavior; current-master bounded combo error-reader/aggregation and fusion cancellation differences require follow-up review. No blanket claim that these response bodies are bounded. CRG unavailable; targeted source/call-site review only. Fresh exact-head qualification and complete failures belong to AZO-1210 attachments, not historical checkpoints above.",
     "release_status": "Draft only; no master merge, tag, image, deploy or Result acceptance. AZO-1167 PR-link boundary remains blocked."
   },
+  "azo_1214_reconciliation": {
+    "classification": "carry master combo diagnostics/cancellation and recover dropped regression coverage; auth remedy blocked, not waived",
+    "candidate_parent": "74554f9e1036d6856535d604cfba20278084b384",
+    "master_reference": "365252e4da550c0c1643d3016e223e48c90512e3",
+    "supersedes": "The combo/fusion statements in azo_999_checkpoint.retained_dependency_closure.reduction and azo_1210_reconciliation.known_review_limits describe historical candidates, not this restoration.",
+    "combo_contracts": {
+      "source": "open-sse/services/combo.js",
+      "diagnostics": "Read non-ok response bodies with readUpstreamBodyText, request signal, 256 KiB cap and 5 s stall timeout. Rebuild only diagnostic responses; cancel failed/abandoned bodies. Selected status and message belong to the same attempt; Retry-After accepts numeric delay seconds and HTTP dates without treating reset epoch values as delays.",
+      "cancellation": "HTTP 499 CLIENT_CLOSED_REQUEST for aborted combo/fusion requests. Each fusion panel owns an AbortController; quorum, client cancellation and panel deadline abort unfinished work. Cancel late responses from abort-ignoring providers and release timeout wrappers/client listeners.",
+      "fusion_bounds": "Parse successful fusion panel bodies concurrently with the existing 8 MiB panel cap and 15 s stall timeout, bounded by each panel hard timeout. Only valid answers count toward quorum. Do not apply the small diagnostic cap to successful combo JSON or judge responses.",
+      "preserved": "Upstream smart routing, session sticky, empty-content failover, request-scoped generic 400 fallback and master streaming EOF behavior remain in place; no retired Responses/SSE overlay replay.",
+      "tests": ["tests/unit/combo-body-contract.test.js", "tests/unit/combo-fusion.test.js", "tests/unit/combo-retry-after.test.js"],
+      "tdd": "Run239 RED: 17 failures in 27 combo tests before source remedy. Focused GREEN: combo suites pass, including large successful bodies; account-fallback-prefill passes after aligning its request-scoped 400 case with the preserved upstream contract (run239 classified receipt). Final exact-commit suite/build receipts and acceptance verdict belong to AZO-1214 evidence, not this pre-qualification inventory."
+    },
+    "dropped_test_inventory": [
+      {"file": "tests/unit/combo-retry-after.test.js", "disposition": "restore", "reason": "Master retry deadline behavior plus __test__.parseRetryDeadline export; numeric delay is distinct from reset epoch."},
+      {"file": "tests/unit/custom-navigation.test.js", "disposition": "equivalent", "reason": "Adapt master navigation checks to upstream Sidebar/Header architecture, preserving AZOX links and retired Contributor absence."},
+      {"file": "tests/unit/chat-account-mutation-order.test.js", "disposition": "restore", "reason": "Master request-scoped mutation ordering and cancellation contracts."},
+      {"file": "tests/translator/assistant-prefill-policy.test.js", "disposition": "restore", "reason": "Master prefill coverage, unchanged behavior assertions; A3 is limited to its three approved divergences, not a waiver for other failures."},
+      {"file": "tests/unit/account-fallback-prefill.test.js", "disposition": "restore", "reason": "Master prefill/abort no-cooldown assertions restored. Master stop-on-other-400 case conflicts with preserved upstream request-scoped fallback, so it asserts that contract instead: next member tried, first rejection returned intact, account never cooled. No expanded A3 waiver."},
+      {"file": "tests/unit/contributor-atomic-completion.test.js", "disposition": "retire", "reason": "AZO-927: entirely removed Contributor completion/reservation boundary."},
+      {"file": "tests/unit/contributor-atomic-sqlite.test.js", "disposition": "retire", "reason": "AZO-927: entirely removed Contributor atomic storage boundary."},
+      {"file": "tests/unit/contributor-oauth-guard.test.js", "disposition": "retire", "reason": "AZO-927: Contributor store/session/route guard fixtures, not normal OAuth login."},
+      {"file": "tests/unit/contributor-route-hardening.test.js", "disposition": "retire", "reason": "AZO-927: removed contribute/contributor-admin routes."},
+      {"file": "tests/unit/contributor-secret.test.js", "disposition": "retire", "reason": "AZO-927: removed Contributor secret boundary."},
+      {"file": "tests/unit/contributor-session-origin.test.js", "disposition": "retire", "reason": "AZO-927: removed Contributor session/origin boundary."},
+      {"file": "tests/unit/contributor-store.test.js", "disposition": "retire", "reason": "AZO-927: removed Contributor storage API."},
+      {"file": "tests/unit/contributor-gitlab-oauth-ssrf.test.js", "disposition": "retire", "reason": "AZO-927: sole case mocks Contributor session/store and its authorization boundary; normal GitLab client-secret validation remains in oauth-register-session."},
+      {"file": "tests/unit/contributor-proxy-atomic.test.js", "disposition": "mixed", "reason": "AZO-927 retires Contributor reservation hooks only. Four unchanged normal-login cases preserved in tests/unit/oauth-proxy-normal.test.js: public errors, wrong-state Trae/Windsurf callbacks and delayed persistence guard. All four fail on current auth source; not skipped."},
+      {"file": "tests/unit/oauth-register-session.test.js", "disposition": "mixed", "reason": "AZO-927 retires six Contributor cases only; retain 18 normal OAuth assertions, of which 11 fail and seven pass in run239 focused receipt. No skips or relaxed expectations."}
+    ],
+    "auth_boundary": "AZO-1216 (Plan 2 Confirmation 27) requests only normal OAuth hardening in src/app/api/oauth/[provider]/[action]/route.js and src/lib/oauth/utils/server.js. Current source grant excludes auth; these production files remain unchanged. Preserve MiniMax lease actions. Fifteen restored normal OAuth failures are blockers, not baseline green or authority to alter auth.",
+    "snapshot": "Remove exactly the obsolete GOLDEN response stream: OpenAI-Responses (codex) → OpenAI > error event → error chunk (fallback id/created) 1 key. Master 365252e4 renamed that case to typed error details; its replacement snapshot already exists. No bulk snapshot update.",
+    "sqljs_build_diagnosis": "Run239 symlink topology resolves source and standalone sql-wasm.wasm to the same device/inode; cpSync fails ERR_FS_CP_EINVAL because src and dest are the same file. Next copied the harness node_modules symlink. Docker uses a physical npm ci. This establishes a harness artifact for that run, not proof of physical packaging success; physical-topology final build remains required, including notices/assets.",
+    "limits": "Offline source-only checks, dummy fixtures, no new dependencies or network. Exact-commit qualification, full failure deltas and self-review (independent_review:false) must be reported honestly. Draft PR19 only; no merge, release/image/deploy, live OAuth/data or Result acceptance; AZO-1167 boundary unchanged."
+  },
   "retired_customizations": {
     "contributor": {
       "classification": "retire",
