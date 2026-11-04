@@ -19,15 +19,15 @@ const sanitized = '{"file_path":"/fixture/example.txt","offset":0,"limit":2000}'
 const parse = (text) => text.split("\n").filter((l) => l.startsWith("data: ") && l.slice(6) !== "[DONE]").map((l) => JSON.parse(l.slice(6)));
 const argsDeltas = (events) => events.filter((e) => e.delta?.type === "input_json_delta");
 function setup(text, wrapped = true, options = {}) {
-  const completed = vi.fn();
-  const transform = createSSEStream({ targetFormat: FORMATS.OPENAI, sourceFormat: FORMATS.CLAUDE, provider: "openai", model: "fixture", onStreamComplete: completed, ...options });
+  const settled = vi.fn();
+  const transform = createSSEStream({ targetFormat: FORMATS.OPENAI, sourceFormat: FORMATS.CLAUDE, provider: "openai", model: "fixture", onStreamComplete: settled, ...options });
   const source = new ReadableStream({ start(c) { for (let i = 0; i < text.length; i += 13) c.enqueue(encoder.encode(text.slice(i, i + 13))); c.close(); } });
   const control = createStreamController({ log: { line: vi.fn(), errorLine: vi.fn() } });
   const error = vi.spyOn(control, "handleError");
   const complete = vi.spyOn(control, "handleComplete");
   const terminal = vi.fn((message) => buildStreamErrorBytes(504, message, FORMATS.CLAUDE));
   const output = wrapped ? pipeWithDisconnect(new Response(source), transform, control, terminal, 1000) : source.pipeThrough(transform);
-  return { output, completed, control, error, complete, terminal };
+  return { output, transform, settled, control, error, complete, terminal };
 }
 async function collect(output) {
   const reader = output.getReader();
@@ -57,9 +57,14 @@ describe("OpenAI upstream to Claude semantic EOF", () => {
       expect(r.error).toMatchObject({ code: "INCOMPLETE_STREAM", message: safeMessage });
       expect(argsDeltas(r.events)).toEqual([]);
       expect(r.events.some((e) => e.type === "message_stop" || e.delta?.stop_reason)).toBe(false);
-      expect(s.completed).not.toHaveBeenCalled();
+      expect(s.settled).not.toHaveBeenCalled();
+      s.transform.finalizeTerminated();
+      expect(s.settled).toHaveBeenCalledTimes(1);
+      expect(s.settled.mock.calls[0][3]).toBe("failed");
       expect(trackPendingRequest).toHaveBeenCalledWith("fixture", "openai", null, false);
-      expect(appendRequestLog).not.toHaveBeenCalled();
+      expect(trackPendingRequest.mock.calls.filter((call) => call[3] === false)).toHaveLength(1);
+      // Content-bearing failures may log estimated usage instead of a null-token row.
+      for (const [entry] of appendRequestLog.mock.calls) expect(entry.status).not.toBe("200 OK");
     });
     it(`actual wrapper emits one safe error for ${name}, never completion`, async () => {
       const s = setup(input);
@@ -68,8 +73,10 @@ describe("OpenAI upstream to Claude semantic EOF", () => {
       expect(s.error).toHaveBeenCalledTimes(1);
       expect(s.error.mock.calls[0][0]).toMatchObject({ code: "INCOMPLETE_STREAM" });
       expect(s.complete).not.toHaveBeenCalled();
-      expect(s.completed).not.toHaveBeenCalled();
-      expect(s.terminal).toHaveBeenCalledExactlyOnceWith(safeMessage);
+      expect(s.settled).toHaveBeenCalledTimes(1);
+      expect(s.settled.mock.calls[0][3]).toBe("failed");
+      expect(s.terminal).toHaveBeenCalledTimes(1);
+      expect(s.terminal.mock.calls[0][0]).toBe(safeMessage);
       expect(argsDeltas(r.events)).toEqual([]);
       expect(r.events.filter((e) => e.type === "error")).toHaveLength(1);
       expect(r.events.at(-1)).toMatchObject({ type: "error", error: { message: safeMessage } });
@@ -91,7 +98,7 @@ describe("OpenAI upstream to Claude semantic EOF", () => {
       expect(r.error).toBeNull();
       expect(argsDeltas(r.events).map((e) => e.delta.partial_json)).toEqual(expected);
       expect(r.events.at(-1).type).toBe("message_stop");
-      expect(s.completed).toHaveBeenCalledTimes(1);
+      expect(s.settled).toHaveBeenCalledTimes(1);
       expect(s.complete).toHaveBeenCalledTimes(1);
       expect(s.error).not.toHaveBeenCalled();
       expect(s.terminal).not.toHaveBeenCalled();
@@ -108,18 +115,18 @@ describe("OpenAI upstream to Claude semantic EOF", () => {
   it("retains usage arriving after finish", async () => {
     const s = setup(frame(tool("{}")) + finish + frame({ choices: [], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } }));
     await collect(s.output);
-    expect(s.completed).toHaveBeenCalledTimes(1);
-    expect(s.completed.mock.calls[0][1]).toMatchObject({ prompt_tokens: 11, completion_tokens: 7 });
+    expect(s.settled).toHaveBeenCalledTimes(1);
+    expect(s.settled.mock.calls[0][1]).toMatchObject({ prompt_tokens: 11, completion_tokens: 7 });
   });
-  it("does not add EOF errors after duplicate finish (existing duplicate terminals remain characterized)", async () => {
+  it("deduplicates terminal output after duplicate finish", async () => {
     const s = setup(frame(tool("{}")) + finish + finish); const r = await collect(s.output);
-    expect(r.events.filter((e) => e.type === "message_stop")).toHaveLength(2);
+    expect(r.events.filter((e) => e.type === "message_stop")).toHaveLength(1);
     expect(s.error).not.toHaveBeenCalled();
-    expect(s.completed).toHaveBeenCalledTimes(1);
+    expect(s.settled).toHaveBeenCalledTimes(1);
   });
   it.each([[FORMATS.OPENAI, FORMATS.OPENAI], [FORMATS.CLAUDE, FORMATS.CLAUDE]])("does not apply the guard to same-format %s", async (upstream, client) => {
     const s = setup("", true, { targetFormat: upstream, sourceFormat: client });
-    await collect(s.output); expect(s.error).not.toHaveBeenCalled(); expect(s.completed).toHaveBeenCalledTimes(1);
+    await collect(s.output); expect(s.error).not.toHaveBeenCalled(); expect(s.settled).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -168,7 +175,8 @@ describe("wrapper keeps abort and reset classification", () => {
     await vi.advanceTimersByTimeAsync(101);
     const r = await result;
     expect(control.signal.aborted).toBe(true); expect(argsDeltas(r.events)).toEqual([]);
-    expect(terminal).toHaveBeenCalledExactlyOnceWith("stream stall timeout");
+    expect(terminal).toHaveBeenCalledTimes(1);
+    expect(terminal.mock.calls[0][0]).toBe("stream stall timeout");
     expect(r.events.filter((e) => e.type === "error")).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(0);
   });

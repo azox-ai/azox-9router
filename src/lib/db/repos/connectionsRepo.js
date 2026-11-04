@@ -377,8 +377,14 @@ export async function createProviderConnection(data) {
 // Critical: OAuth refresh token race — atomic merge inside transaction
 export async function updateProviderConnection(id, data, options = {}) {
   const db = await getAdapter();
+  if (options.signal?.aborted) throw options.signal.reason ?? new DOMException("Request aborted", "AbortError");
+  if (options.shouldCommit && !options.shouldCommit()) return null;
+  options.beforeCommit?.();
+  if (options.shouldCommit && !options.shouldCommit()) return null;
   let result;
   db.transaction(() => {
+    if (options.signal?.aborted) throw options.signal.reason ?? new DOMException("Request aborted", "AbortError");
+    if (options.shouldCommit && !options.shouldCommit()) { result = null; return; }
     const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
@@ -388,8 +394,6 @@ export async function updateProviderConnection(id, data, options = {}) {
       result = null;
       return;
     }
-    // Only the Portal sync endpoint may assign Portal identity; an ordinary row
-    // must not claim a reserved external ID or version through a generic update.
     const normalized = resetHealthStateOnActivation(existing, portalId ? data : withoutPortalIdentity(data));
     const guarded = portalId ? {
       ...normalized,
@@ -408,6 +412,7 @@ export async function updateProviderConnection(id, data, options = {}) {
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;
   });
+  if (result) options.afterCommit?.(result);
   return result;
 }
 

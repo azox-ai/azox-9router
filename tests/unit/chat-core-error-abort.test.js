@@ -35,7 +35,8 @@ vi.mock("@/lib/localDb", () => ({
 vi.mock("@/lib/disabledModelsDb", () => ({ getDisabledModels: async () => ({}) }));
 vi.mock("@/lib/db/repos/combosRepo.js", () => ({ getCombos: async () => [] }));
 vi.mock("@/lib/db/repos/apiKeysRepo.js", () => ({ getApiKeyByKey: async () => null }));
-vi.mock("@/sse/services/auth.js", () => ({
+vi.mock("@/sse/services/auth.js", async (importOriginal) => ({
+  ...await importOriginal(),
   getProviderCredentials: async () => ({ connectionId: "abort-fixture", providerSpecificData: {} }),
   markAccountUnavailable: async () => ({ shouldFallback: false }),
   clearAccountError: async () => {}, extractApiKey: () => null, isValidApiKey: async () => true,

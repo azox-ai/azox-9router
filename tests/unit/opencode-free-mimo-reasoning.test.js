@@ -153,7 +153,7 @@ describe("OpenCode free reasoning aliases reach OpenAI-shaped clients", () => {
   it("streams reasoning_content on the OpenAI passthrough", async () => {
     let settled = null;
     const out = passthroughEvents(
-      await drain(sseStream([aliasDelta, answerDelta]).pipeThrough(
+      await drain(sseStream([aliasDelta, answerDelta, { ...answerDelta, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }]).pipeThrough(
         createPassthroughStreamWithLogger(PROVIDER, null, MODEL, null, null, (content, usage) => { settled = content; }, null),
       )),
     );
@@ -182,14 +182,15 @@ describe("OpenCode free reasoning aliases reach OpenAI-shaped clients", () => {
   });
 
   it("aggregates alias reasoning for forced-stream JSON clients", () => {
-    const raw = `data: ${JSON.stringify(aliasDelta)}\n\ndata: ${JSON.stringify(answerDelta)}\n\n`;
+    const terminal = { ...answerDelta, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] };
+    const raw = `data: ${JSON.stringify(aliasDelta)}\n\ndata: ${JSON.stringify(answerDelta)}\n\ndata: ${JSON.stringify(terminal)}\n\n`;
     const parsed = parseSSEToOpenAIResponse(raw, MODEL);
     expect(parsed.choices[0].message.reasoning_content).toBe("17*23 = 391");
     expect(parsed.choices[0].message.content).toBe("391");
 
     // Reasoning-only output (token cap hit before the answer) survives as well —
     // handleForcedSSEToJson strips reasoning_content only when content is non-empty.
-    const reasoningOnly = parseSSEToOpenAIResponse(`data: ${JSON.stringify(aliasDelta)}\n\n`, MODEL);
+    const reasoningOnly = parseSSEToOpenAIResponse(`data: ${JSON.stringify(aliasDelta)}\n\ndata: ${JSON.stringify({ ...terminal, choices: [{ index: 0, delta: {}, finish_reason: "length" }] })}\n\n`, MODEL);
     expect(reasoningOnly.choices[0].message.content).toBe("");
     expect(reasoningOnly.choices[0].message.reasoning_content).toBe("17*23 = 391");
   });

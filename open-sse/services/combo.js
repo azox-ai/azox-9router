@@ -3,6 +3,9 @@
  */
 
 import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
+import { isAbortError, throwIfAborted, waitWithSignal } from "../utils/abort.js";
+import { HTTP_STATUS } from "../config/runtimeConfig.js";
+import { errorResponse } from "../utils/error.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { parseModel } from "./model.js";
@@ -366,7 +369,10 @@ export async function handleComboChat({
   sessionSticky = true,
   confidenceThreshold = 0.8,
   resolveSmartChoice = null,
+  allowFallback = true,
+  signal,
 }) {
+  if (signal?.aborted) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
   let rotatedModels = models;
   let activeStickyModel = null;
 
@@ -464,6 +470,7 @@ export async function handleComboChat({
     }
   }
   
+  let allCredentialsUnavailable = rotatedModels.length > 0;
   let lastError = null;
   let earliestRetryAfter = null;
   let lastStatus = null;
@@ -474,11 +481,18 @@ export async function handleComboChat({
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
+      throwIfAborted(signal);
       const result = await handleSingleModel(body, modelStr, {
         combo: comboName || null,
         attempt: i + 1,
       });
       
+      if (signal?.aborted) {
+        result.body?.cancel?.().catch(() => {});
+        return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+      }
+      if (result.status === HTTP_STATUS.CLIENT_CLOSED_REQUEST || !allowFallback) return result;
+
       // Success (2xx). A 2xx is necessary but NOT sufficient: Gemini aborts (e.g.
       // MALFORMED_FUNCTION_CALL) still return 200 and stream empty content, which would
       // otherwise be delivered as a successful empty answer with no failover.
@@ -557,17 +571,23 @@ export async function handleComboChat({
       if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
         clearStickyComboSession(comboName, sessionId);
       }
+      if (!allowFallback) return result;
 
       // Extract error info from response
       let errorText = result.statusText || "";
       let retryAfter = null;
+      let errorCode = null;
       try {
         const errorBody = await result.clone().json();
         errorText = errorBody?.error?.message || errorBody?.error || errorBody?.message || errorText;
         retryAfter = errorBody?.retryAfter || null;
+        errorCode = errorBody?.error?.code || null;
       } catch {
         // Ignore JSON parse errors
       }
+
+      // A failed owner must never cause a second provider to receive this session.
+      if (errorCode === "session_affinity_unavailable") return result;
 
       // Track earliest retryAfter across all combo models
       if (retryAfter && (!earliestRetryAfter || new Date(retryAfter) < new Date(earliestRetryAfter))) {
@@ -579,6 +599,7 @@ export async function handleComboChat({
         try { errorText = JSON.stringify(errorText); } catch { errorText = String(errorText); }
       }
 
+      throwIfAborted(signal);
       // Check if should fallback to next model
       const { provider } = parseModel(modelStr);
       const { shouldFallback, cooldownMs, requestScoped } = checkFallbackError(result.status, errorText, 0, provider);
@@ -609,7 +630,7 @@ export async function handleComboChat({
       if (cooldownMs && cooldownMs > 0 && cooldownMs <= 5000 &&
           (result.status === 503 || result.status === 502 || result.status === 504)) {
         log.info("COMBO", `Model ${modelStr} transient ${result.status}, waiting ${cooldownMs}ms before next`);
-        await new Promise(r => setTimeout(r, cooldownMs));
+        await waitWithSignal(cooldownMs, signal);
       }
 
       // Fallback to next model
@@ -617,6 +638,14 @@ export async function handleComboChat({
       if (!lastStatus) lastStatus = result.status;
       log.warn("COMBO", `Model ${modelStr} failed, trying next`, { status: result.status });
     } catch (error) {
+      if (isAbortError(error, signal)) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+      if (!allowFallback || error?.code === "session_affinity_unavailable") {
+        return new Response(JSON.stringify({ error: {
+          code: "session_affinity_unavailable",
+          message: "The session owner is unavailable. Retry the same session when its original account recovers.",
+        } }), { status: 409, headers: { "Content-Type": "application/json" } });
+      }
+      allCredentialsUnavailable = false;
       // Catch unexpected exceptions to ensure fallback continues
       if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
         clearStickyComboSession(comboName, sessionId);

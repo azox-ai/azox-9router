@@ -78,7 +78,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Check for bypass patterns (warmup, skip, cc naming)
   const bypassResponse = handleBypassRequest(body, model, userAgent, ccFilterNaming);
-  if (bypassResponse) return bypassResponse;
+  if (bypassResponse) return { ...bypassResponse, bypass: true };
 
   const alias = PROVIDER_ID_TO_ALIAS[provider] || provider;
   const modelTargetFormat = getModelTargetFormat(alias, model);
@@ -188,7 +188,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
     // Convert remote image URLs to base64 for targets that can't fetch URLs.
     try {
-      const n = await prefetchRemoteImages(body, sourceFormat, targetFormat, { signal: undefined });
+      const n = await prefetchRemoteImages(body, sourceFormat, targetFormat, { signal });
       if (n > 0) log?.debug?.("MODALITY", `prefetched ${n} remote image(s) for ${targetFormat}`);
     } catch (e) { log?.warn?.("MODALITY", `image prefetch failed: ${e.message}`); }
   }
@@ -211,10 +211,27 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
         delete translatedBody.reasoning_effort;
       }
     }
-    // Normalize newer Cowork/CC beta shapes (adaptive thinking, mid-conversation system) the API rejects
-    if (clientTool === "claude") normalizeClaudePassthrough(translatedBody, translatedBody.model, credentials?.rawHeaders);
+    // Normalize newer Cowork/CC beta shapes (adaptive thinking, mid-conversation system) the API rejects.
+    // Pass the raw client headers so x-9router-assistant-prefill: preserve keeps working on passthrough.
+    if (clientTool === "claude") {
+      try {
+        normalizeClaudePassthrough(translatedBody, translatedBody.model, clientRawRequest?.headers || null);
+      } catch (error) {
+        if (error?.code !== "unsupported_tool_constraint") throw error;
+        trackPendingRequest(model, provider, connectionId, false, true);
+        return createErrorResult(HTTP_STATUS.BAD_REQUEST, error.message);
+      }
+    }
   } else {
-    translatedBody = translateRequest(sourceFormat, targetFormat, upstreamModel, body, stream, credentials, provider, reqLogger, stripList, connectionId, clientTool);
+    try {
+      translatedBody = translateRequest(sourceFormat, targetFormat, upstreamModel, body, stream, credentials, provider, reqLogger, stripList, connectionId, clientTool);
+    } catch (error) {
+      // A declared tool-compatibility rejection is a client-side 400, not an
+      // opaque 500 that a combo would misread as a retryable server error.
+      if (error?.code !== "unsupported_tool_constraint") throw error;
+      trackPendingRequest(model, provider, connectionId, false, true);
+      return createErrorResult(HTTP_STATUS.BAD_REQUEST, error.message);
+    }
     if (!translatedBody) {
       trackPendingRequest(model, provider, connectionId, false, true);
       return createErrorResult(HTTP_STATUS.BAD_REQUEST, `Failed to translate request for ${sourceFormat} → ${targetFormat}`);

@@ -2,6 +2,9 @@ import "open-sse/index.js";
 
 import {
   getProviderCredentials,
+  beginAccountMutationAttempt,
+  endAccountMutationAttempt,
+  recordAccountMutationSuccess,
   markAccountUnavailable,
   clearAccountError,
   extractApiKey,
@@ -23,6 +26,8 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import { resolveSessionIdentity } from "open-sse/utils/sessionManager.js";
 import * as log from "../utils/logger.js";
+import { extractSessionKey, containsEncryptedContent, affinityIdentity, affinityLog, withAffinityHeaders, affinityUnavailableResponse } from "../services/sessionAffinity.js";
+import { isAbortError } from "open-sse/utils/abort.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
@@ -108,6 +113,7 @@ export async function handleChat(request, clientRawRequest = null) {
   if (bypassResponse) return bypassResponse.response || bypassResponse;
 
   const requiredCapabilities = detectRequiredCapabilities(body);
+  const encryptedContent = containsEncryptedContent(body);
 
   // Check if model is a combo (has multiple models with fallback)
   const comboModels = await getComboModels(modelStr);
@@ -116,6 +122,14 @@ export async function handleChat(request, clientRawRequest = null) {
     const comboStrategies = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
     const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
+    // A combo can change providers before it reaches credential selection. The
+    // original owner cannot be inferred safely from ciphertext alone.
+    if (encryptedContent) {
+      const requestId = request.headers.get("x-request-id") || request.headers.get("x-correlation-id") || monitoring?.correlationId;
+      affinityLog("affinity_unavailable", null, null, requestId,
+        comboStrategy === "fusion" ? "fusion_with_encrypted_content" : "combo_with_encrypted_content");
+      return affinityUnavailableResponse("encrypted_content must target its original pinned provider/model, not a combo");
+    }
     const augmentedModels = await filterAdapterModels(keyAccess, augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings), comboModels);
     const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
 
@@ -125,7 +139,7 @@ export async function handleChat(request, clientRawRequest = null) {
       return handleFusionChat({
         body,
         models: comboModels,
-        handleSingleModel: (b, m, isPanel) => {
+        handleSingleModel: (b, m, isPanel, panelSignal) => {
           let cleanRawReq = clientRawRequest;
           if (isPanel && clientRawRequest) {
             const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
@@ -134,12 +148,13 @@ export async function handleChat(request, clientRawRequest = null) {
           fusionAttempt += 1;
           return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, null, {
             ...monitoring, combo: modelStr, attempt: fusionAttempt,
-          });
+          }, panelSignal || request?.signal);
         },
         log,
         comboName: modelStr,
         judgeModel: comboStrategies[modelStr]?.judgeModel,
         tuning: comboStrategies[modelStr]?.fusionTuning,
+        signal: request?.signal,
       });
     }
 
@@ -152,7 +167,7 @@ export async function handleChat(request, clientRawRequest = null) {
       handleSingleModel: withCapacityAdapterStripping(
         (b, m, comboAttempt) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, null, {
           ...monitoring, ...comboAttempt,
-        }),
+        }, request?.signal),
         adapterAdded
       ),
       log,
@@ -171,13 +186,16 @@ export async function handleChat(request, clientRawRequest = null) {
             log,
           })
         : null,
+      allowFallback: !extractSessionKey(request?.headers, body),
+      signal: request?.signal
     });
   }
 
   // Single model request — may still switch to a capacity-adapter model if the
   // target lacks a capability the request needs (e.g. no vision, request has an image).
   const soloAugmented = await filterAdapterModels(keyAccess, augmentModelsWithCapacityAdapter([modelStr], requiredCapabilities, settings), [modelStr]);
-  if (soloAugmented.length > 1) {
+  // A session owner must not be silently replaced by a capacity adapter.
+  if (soloAugmented.length > 1 && !extractSessionKey(request?.headers, body)) {
     const adapterAdded = soloAugmented.filter((m) => m !== modelStr);
     log.info("CHAT", `Capacity adapter for [${[...requiredCapabilities].join(",")}] on "${modelStr}" → trying ${soloAugmented.join(", ")}`);
     return handleComboChat({
@@ -186,22 +204,23 @@ export async function handleChat(request, clientRawRequest = null) {
       handleSingleModel: withCapacityAdapterStripping(
         (b, m, comboAttempt) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, null, {
           ...monitoring, ...comboAttempt,
-        }),
+        }, request?.signal),
         adapterAdded
       ),
       log,
       comboName: modelStr,
-      comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
+      comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings),
+      signal: request?.signal
     });
   }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, contextMarker ? `${modelStr.slice(modelStr.indexOf("/") + 1)}[${contextMarker}]` : null, monitoring);
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, contextMarker ? `${modelStr.slice(modelStr.indexOf("/") + 1)}[${contextMarker}]` : null, monitoring, request?.signal);
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null, monitoring = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null, monitoring = null, signal = null) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
@@ -213,6 +232,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       const comboStrategies = chatSettings.comboStrategies || {};
       const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
       const comboStrategy = comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
+      if (containsEncryptedContent(body)) {
+        const requestId = request?.headers?.get("x-request-id") || request?.headers?.get("x-correlation-id") || monitoring?.correlationId;
+        affinityLog("affinity_unavailable", null, null, requestId,
+          comboStrategy === "fusion" ? "fusion_with_encrypted_content" : "combo_with_encrypted_content");
+        return affinityUnavailableResponse("encrypted_content must target its original pinned provider/model, not a combo");
+      }
       const requiredCapabilities = detectRequiredCapabilities(body);
       // Nested combo (a combo member that is itself a combo): the access decision
       // was made on the outer target; only drop adapter models the key may not call.
@@ -226,7 +251,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         return handleFusionChat({
           body,
           models: comboModels,
-          handleSingleModel: (b, m, isPanel) => {
+          handleSingleModel: (b, m, isPanel, panelSignal) => {
             let cleanRawReq = clientRawRequest;
             if (isPanel && clientRawRequest) {
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
@@ -235,12 +260,13 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
             fusionAttempt += 1;
             return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, null, {
               ...monitoring, combo: modelStr, attempt: fusionAttempt,
-            });
+            }, panelSignal || signal || request?.signal);
           },
           log,
           comboName: modelStr,
           judgeModel: comboStrategies[modelStr]?.judgeModel,
           tuning: comboStrategies[modelStr]?.fusionTuning,
+        signal: signal || request?.signal,
         });
       }
 
@@ -255,7 +281,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         handleSingleModel: withCapacityAdapterStripping(
           (b, m, comboAttempt) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, null, {
             ...monitoring, ...comboAttempt,
-          }),
+          }, signal || request?.signal),
           adapterAdded
         ),
         log,
@@ -274,6 +300,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               log,
             })
           : null,
+        allowFallback: !extractSessionKey(request?.headers, body),
+        signal: signal || request?.signal
       });
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });
@@ -281,6 +309,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   }
 
   const { provider, model } = modelInfo;
+  const encryptedContent = containsEncryptedContent(body);
+  const sessionKey = extractSessionKey(request?.headers, body);
+  const requestId = request?.headers?.get("x-request-id") || request?.headers?.get("x-correlation-id") || monitoring?.correlationId;
+  const identity = affinityIdentity(sessionKey, provider, apiKey);
+  if (encryptedContent && !identity) {
+    affinityLog("affinity_unavailable", null, null, requestId, "missing_session_key");
+    log.warn("AFFINITY", "encrypted_content without session key; refusing unpinned routing");
+    return affinityUnavailableResponse("encrypted_content requires a session key and an existing pin");
+  }
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 
@@ -295,7 +332,25 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let accountAttempt = 0;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { requestedModel: requestedModel || model });
+    let credentials;
+    try {
+      credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+        sessionKey, apiKey, encryptedContent, requestId, requestedModel: requestedModel || model, signal: signal || request?.signal,
+      });
+    } catch (error) {
+      if (isAbortError(error, signal || request?.signal)) {
+        return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+      }
+      if (!sessionKey) throw error;
+      affinityLog("affinity_unavailable", identity, null, requestId, "owner_selection_failed");
+      return affinityUnavailableResponse("session owner selection failed", true);
+    }
+    if (credentials?.affinityUnavailable) return affinityUnavailableResponse(credentials.reason, credentials.retryable);
+    // Ciphertext can only be replayed on an owner established by a prior turn.
+    if (encryptedContent && credentials && credentials.affinity !== "hit") {
+      affinityLog("affinity_unavailable", identity, credentials.connectionId, requestId, "encrypted_content_without_owner");
+      return affinityUnavailableResponse("encrypted_content requires an existing owner pin");
+    }
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -315,9 +370,18 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
     accountAttempt += 1;
     const attemptStartedAt = Date.now();
-
-    // Account selection shown in the unified "▶" line (acc:...)
-    const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+    let refreshedCredentials;
+    try {
+      refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+      if ((signal || request?.signal)?.aborted) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+    } catch (error) {
+      if (isAbortError(error, signal || request?.signal)) {
+        return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+      }
+      if (!sessionKey) throw error;
+      affinityLog("affinity_unavailable", identity, credentials.connectionId, requestId, "owner_refresh_failed");
+      return affinityUnavailableResponse("pinned account refresh failed", true);
+    }
 
     // Ensure real project ID is available for providers that need it (P0 fix: cold miss)
     if ((provider === "antigravity" || provider === "gemini-cli") && !refreshedCredentials.projectId) {
@@ -329,20 +393,24 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
     }
 
-    // Health writes for a Portal-managed row are pinned to the token version this
-    // request used, so a late result cannot touch a credential rotated meanwhile.
+    const chatSettings = await getSettings();
+    const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    const mutationAttempt = beginAccountMutationAttempt(credentials.connectionId, model);
     const expectedPortalTokenVersion = credentials.providerSpecificData?.portalExternalId
       ? credentials.providerSpecificData.portalTokenVersion
       : undefined;
-    const healthOptions = expectedPortalTokenVersion !== undefined ? { expectedPortalTokenVersion } : {};
-
-    // Use shared chatCore
-    const chatSettings = await getSettings();
-    const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    const mutationOptions = { mutationAttempt, ...(expectedPortalTokenVersion !== undefined
+      ? { expectedPortalTokenVersion } : {}) };
+    let mutationReleased = false;
+    const releaseMutationAttempt = () => {
+      if (mutationReleased) return;
+      mutationReleased = true;
+      endAccountMutationAttempt(mutationAttempt);
+    };
     let result;
     try {
       result = await handleChatCore({
-        signal: request?.signal,
+        signal: signal || request?.signal,
         body: { ...body, model: `${provider}/${model}` },
         modelInfo: { provider, model },
         credentials: refreshedCredentials,
@@ -382,19 +450,30 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           });
         },
         onRequestSuccess: async () => {
-          await clearAccountError(credentials.connectionId, credentials, model, healthOptions);
-          // "Consecutive" strikes: a success clears the breaker for this pair.
-          clearAntigravityStrikes(credentials.connectionId, model);
+          recordAccountMutationSuccess(mutationAttempt);
+          try {
+            await clearAccountError(credentials.connectionId, credentials, model, mutationOptions);
+            clearAntigravityStrikes(credentials.connectionId, model);
+          } finally {
+            releaseMutationAttempt();
+          }
         }
       });
     } catch (error) {
+      releaseMutationAttempt();
+      const aborted = isAbortError(error, signal || request?.signal);
       emitGatewayAttempt(buildGatewayAttemptLog({
         monitoring, provider, model,
         account: credentials.connectionName || credentials.connectionId,
-        accountAttempt, status: HTTP_STATUS.SERVER_ERROR, success: false,
+        accountAttempt,
+        status: aborted ? HTTP_STATUS.CLIENT_CLOSED_REQUEST : HTTP_STATUS.SERVER_ERROR,
+        success: false,
         startTime: attemptStartedAt,
       }));
-      throw error;
+      if (aborted) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+      if (!sessionKey) throw error;
+      affinityLog("affinity_unavailable", identity, credentials.connectionId, requestId, "owner_request_failed");
+      return affinityUnavailableResponse("pinned account request failed", true);
     }
 
     emitGatewayAttempt(buildGatewayAttemptLog({
@@ -405,7 +484,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         startTime: attemptStartedAt,
       }));
 
-    if (result.success) return result.response;
+    if (result.success) {
+      if (result.bypass) releaseMutationAttempt();
+      return withAffinityHeaders(result.response, credentials);
+    }
 
     // Antigravity 409/429: refresh live quota to get exact resetAt before locking
     let quotaResetMs = null;
@@ -420,11 +502,21 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
     // Exhausted Antigravity model is blocked only in RAM cache until upstream resetAt.
     // Do not persist a modelLock_* for this path.
-    const shouldFallback = provider === "antigravity" && quotaResetMs
-      ? true
-      : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs, healthOptions)).shouldFallback;
+    let shouldFallback;
+    try {
+      shouldFallback = provider === "antigravity" && quotaResetMs
+        ? true
+        : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs, mutationOptions)).shouldFallback;
+    } finally {
+      releaseMutationAttempt();
+    }
 
     if (shouldFallback) {
+      if (sessionKey) {
+        affinityLog("affinity_unavailable", identity, credentials.connectionId, requestId, `pinned_upstream_${result.status}`);
+        log.warn("AFFINITY", `session owner failed (${result.status}); retaining owner and refusing account switch`);
+        return affinityUnavailableResponse(`pinned account failed with upstream ${result.status}`, true);
+      }
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;
@@ -433,6 +525,6 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       continue;
     }
 
-    return result.response;
+    return withAffinityHeaders(result.response, credentials);
   }
 }

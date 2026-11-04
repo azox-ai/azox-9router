@@ -2,12 +2,249 @@ import { getProviderConnections, validateApiKey, updateProviderConnection, getSe
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
+import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { getAntigravityQuotaCache, getAntigravityModelQuota } from "./antigravityQuota.js";
+import { throwIfAborted } from "open-sse/utils/abort.js";
 import * as log from "../utils/logger.js";
+import { affinityIdentity, affinityTtlMs, resolveOwner, claimOwner, setPin, affinityLog } from "./sessionAffinity.js";
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
+
+// Request-order state for account cooldown writes. Attempts are assigned
+// immediately before upstream dispatch by each credentialed handler. Keeping
+// per-model and connection-wide success/failure IDs lets DB-boundary predicates
+// reject late mutations without serializing the network calls themselves.
+// Retained failure watermarks protect late streaming callbacks after their
+// request wrapper has returned. Model names are client-controlled, so dormant
+// entries must still be swept and capped. Active attempts are never evicted;
+// the map may temporarily exceed the cap while that work is in flight.
+export const ACCOUNT_MUTATION_STATE_MAX_ENTRIES = 2048;
+const ACCOUNT_MUTATION_STATE_SWEEP_INTERVAL_MS = 60_000;
+const accountMutationStates = new Map(); // key -> { active, latestSuccessId, latestFailureId, failureUntil, scope, generationStartId, latestAttemptId }
+const dormantModelMutationKeys = new Set();
+const dormantAccountMutationKeys = new Set();
+let nextAccountMutationAttemptId = 0;
+let nextAccountMutationSweepAt = 0;
+// A cap eviction leaves a generation tombstone. Missing generations at or
+// below this ID fail closed, while a recreated key rejects IDs older than its
+// own generationStartId. This keeps late streaming callbacks from clearing or
+// writing state after their detailed watermark was compacted.
+let evictedThroughAccountMutationAttemptId = 0;
+
+function accountMutationKey(connectionId, model) {
+  return JSON.stringify([String(connectionId || ""), model ? String(model) : null]);
+}
+
+function deleteAccountMutationState(key, preserveGenerationTombstone = false) {
+  const state = accountMutationStates.get(key);
+  if (preserveGenerationTombstone && state) {
+    evictedThroughAccountMutationAttemptId = Math.max(
+      evictedThroughAccountMutationAttemptId,
+      state.latestAttemptId || 0,
+    );
+  }
+  accountMutationStates.delete(key);
+  dormantModelMutationKeys.delete(key);
+  dormantAccountMutationKeys.delete(key);
+}
+
+function markAccountMutationStateDormant(key, state) {
+  dormantModelMutationKeys.delete(key);
+  dormantAccountMutationKeys.delete(key);
+  (state.scope === "account" ? dormantAccountMutationKeys : dormantModelMutationKeys).add(key);
+}
+
+function sweepDormantAccountMutationSet(keys, now, expiredOnly = false) {
+  for (const key of keys) {
+    const state = accountMutationStates.get(key);
+    if (!state) {
+      keys.delete(key);
+      continue;
+    }
+    if (state.active > 0) {
+      keys.delete(key);
+      continue;
+    }
+    if (expiredOnly && state.failureUntil > now) continue;
+    deleteAccountMutationState(key, !expiredOnly);
+    if (!expiredOnly && accountMutationStates.size <= ACCOUNT_MUTATION_STATE_MAX_ENTRIES) break;
+  }
+}
+
+function sweepAccountMutationStates(now = Date.now(), enforceLimit = false) {
+  if (!enforceLimit && now < nextAccountMutationSweepAt) return;
+  nextAccountMutationSweepAt = now + ACCOUNT_MUTATION_STATE_SWEEP_INTERVAL_MS;
+
+  sweepDormantAccountMutationSet(dormantModelMutationKeys, now, true);
+  sweepDormantAccountMutationSet(dormantAccountMutationKeys, now, true);
+  if (accountMutationStates.size <= ACCOUNT_MUTATION_STATE_MAX_ENTRIES) return;
+
+  // Prefer evicting client-controlled model keys. Account-wide watermarks are
+  // bounded by the number of configured connections and protect cross-model
+  // ordering, so retain them until model entries alone cannot satisfy the cap.
+  sweepDormantAccountMutationSet(dormantModelMutationKeys, now);
+  if (accountMutationStates.size > ACCOUNT_MUTATION_STATE_MAX_ENTRIES) {
+    sweepDormantAccountMutationSet(dormantAccountMutationKeys, now);
+  }
+}
+
+function getAccountMutationStateByKey(key, create = false, scope = "model", attemptId = 0) {
+  if (!key) return null;
+  let state = accountMutationStates.get(key);
+  if (state && state.active === 0 && state.failureUntil <= Date.now()) {
+    deleteAccountMutationState(key);
+    state = null;
+  }
+  if (!state && create) {
+    const generationStartId = Number.isFinite(attemptId) ? attemptId : 0;
+    state = {
+      active: 0,
+      latestSuccessId: 0,
+      latestFailureId: 0,
+      failureUntil: 0,
+      scope,
+      generationStartId,
+      latestAttemptId: generationStartId,
+    };
+    accountMutationStates.set(key, state);
+  }
+  return state;
+}
+
+function getAccountMutationState(attempt, create = false) {
+  if (!attempt?.key || !Number.isFinite(attempt.id)) return null;
+  return getAccountMutationStateByKey(attempt.key, create);
+}
+
+function getConnectionMutationState(attempt, create = false) {
+  if (!attempt?.accountKey || !Number.isFinite(attempt.id)) return null;
+  return getAccountMutationStateByKey(attempt.accountKey, create);
+}
+
+export function beginAccountMutationAttempt(connectionId, model) {
+  sweepAccountMutationStates(Date.now(), accountMutationStates.size > ACCOUNT_MUTATION_STATE_MAX_ENTRIES);
+  const attempt = {
+    key: accountMutationKey(connectionId, model),
+    accountKey: accountMutationKey(connectionId, null),
+    id: ++nextAccountMutationAttemptId,
+  };
+  const keys = attempt.key === attempt.accountKey
+    ? [[attempt.accountKey, "account"]]
+    : [[attempt.key, "model"], [attempt.accountKey, "account"]];
+  for (const [key, scope] of keys) {
+    const state = getAccountMutationStateByKey(key, true, scope, attempt.id);
+    state.latestAttemptId = Math.max(state.latestAttemptId, attempt.id);
+    state.active += 1;
+    dormantModelMutationKeys.delete(key);
+    dormantAccountMutationKeys.delete(key);
+  }
+  return attempt;
+}
+
+export function endAccountMutationAttempt(attempt) {
+  for (const key of new Set([attempt?.key, attempt?.accountKey])) {
+    const state = getAccountMutationStateByKey(key);
+    if (!state || attempt.id < state.generationStartId) continue;
+    state.active = Math.max(0, state.active - 1);
+    if (state.active === 0 && state.failureUntil <= Date.now()) {
+      deleteAccountMutationState(key);
+    } else if (state.active === 0) {
+      markAccountMutationStateDormant(key, state);
+    }
+  }
+  sweepAccountMutationStates(Date.now(), accountMutationStates.size > ACCOUNT_MUTATION_STATE_MAX_ENTRIES);
+}
+
+export function recordAccountMutationSuccess(attempt) {
+  // A streaming success callback may run after the request wrapper has already
+  // released its attempt.  Do not recreate an otherwise-dead key in that case:
+  // if no older request/failure is still tracked, there is nothing left for the
+  // success watermark to invalidate.
+  for (const key of new Set([attempt?.key, attempt?.accountKey])) {
+    const state = getAccountMutationStateByKey(key);
+    if (!state || attempt.id < state.generationStartId) continue;
+    state.latestSuccessId = Math.max(state.latestSuccessId, attempt.id);
+    // Once a newer success supersedes the latest failure, the old cooldown no
+    // longer needs to retain this ordering record. Active older attempts keep
+    // the state alive until their own terminal path runs.
+    if (attempt.id >= state.latestFailureId) state.failureUntil = 0;
+    if (state.active === 0 && state.failureUntil <= Date.now()) {
+      deleteAccountMutationState(key);
+    }
+  }
+}
+
+// Deliberately narrow test-only visibility: tests can prove that adversarial
+// model cardinality is bounded without exposing keys or request metadata.
+export function __getAccountMutationStateStatsForTests() {
+  sweepAccountMutationStates(Date.now(), true);
+  let activeEntries = 0;
+  for (const state of accountMutationStates.values()) {
+    if (state.active > 0) activeEntries += 1;
+  }
+  return {
+    size: accountMutationStates.size,
+    activeEntries,
+    dormantEntries: accountMutationStates.size - activeEntries,
+  };
+}
+
+function canAccountMutationAttemptClearFailure(attempt) {
+  const state = getAccountMutationState(attempt);
+  if (!state) return attempt.id > evictedThroughAccountMutationAttemptId;
+  return attempt.id >= state.generationStartId && attempt.id >= state.latestFailureId;
+}
+
+function canAccountMutationAttemptCommitFailure(attempt) {
+  const state = getAccountMutationState(attempt);
+  if (!state) return attempt.id > evictedThroughAccountMutationAttemptId;
+  return attempt.id >= state.generationStartId && (
+    attempt.id >= state.latestSuccessId && attempt.id >= state.latestFailureId
+  );
+}
+
+function canConnectionMutationAttemptClearFailure(attempt) {
+  const state = getConnectionMutationState(attempt);
+  if (!state) return attempt.id > evictedThroughAccountMutationAttemptId;
+  return attempt.id >= state.generationStartId && attempt.id >= state.latestFailureId;
+}
+
+function canConnectionMutationAttemptCommitFailure(attempt) {
+  const state = getConnectionMutationState(attempt);
+  if (!state) return attempt.id > evictedThroughAccountMutationAttemptId;
+  return attempt.id >= state.generationStartId && (
+    attempt.id >= state.latestSuccessId && attempt.id >= state.latestFailureId
+  );
+}
+
+function recordMutationFailureForKey(key, attemptId, failureUntil, scope = "model") {
+  const state = getAccountMutationStateByKey(key, true, scope, attemptId);
+  if (!state || attemptId < state.generationStartId || attemptId < state.latestFailureId) return;
+  state.latestAttemptId = Math.max(state.latestAttemptId, attemptId);
+  state.latestFailureId = attemptId;
+  state.failureUntil = Math.max(Date.now(), Number(failureUntil) || 0);
+  if (state.active === 0) markAccountMutationStateDormant(key, state);
+}
+
+function recordAccountMutationFailure(attempt, failureUntil, includeConnection = false) {
+  if (!attempt?.key || !Number.isFinite(attempt.id)) return;
+  recordMutationFailureForKey(
+    attempt.key,
+    attempt.id,
+    failureUntil,
+    attempt.key === attempt.accountKey ? "account" : "model",
+  );
+  if (includeConnection && attempt.accountKey !== attempt.key) {
+    recordMutationFailureForKey(attempt.accountKey, attempt.id, failureUntil, "account");
+  }
+}
+
+function combineCommitPredicates(...predicates) {
+  const active = predicates.filter((predicate) => typeof predicate === "function");
+  return active.length > 0 ? () => active.every((predicate) => predicate()) : null;
+}
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
@@ -32,29 +269,41 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
   const requestedModel = options?.requestedModel || model;
+  const signal = options?.signal || null;
   // Acquire mutex to prevent race conditions
   const currentMutex = selectionMutex;
   let resolveMutex;
   selectionMutex = new Promise(resolve => { resolveMutex = resolve; });
 
   try {
+    // Do not abandon our mutex slot on abort: resolving it before the previous
+    // owner finishes would let a later selector enter the critical section.
     await currentMutex;
+    throwIfAborted(signal);
 
     // Resolve alias to provider ID (e.g., "kc" -> "kilocode")
     const providerId = resolveProviderId(provider);
+    const identity = affinityIdentity(options?.sessionKey, providerId, options?.apiKey);
 
     // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings)
     if (FREE_PROVIDERS[providerId]?.noAuth) {
+      if (options?.encryptedContent) {
+        affinityLog("affinity_unavailable", identity, null, options?.requestId, "no_account_owner");
+        return { affinityUnavailable: true, reason: "provider has no original account mapping", retryable: false };
+      }
       const settings = await getSettings();
+      throwIfAborted(signal);
       const override = (settings.providerStrategies || {})[providerId] || {};
       const strategy = override.rotateStrategy || "none";
       let pickedId = override.proxyPoolId || null;
       if (strategy !== "none") {
         const allPools = await getProxyPools({ isActive: true });
+        throwIfAborted(signal);
         const poolIds = allPools.filter(p => p.proxyUrl).map(p => p.id);
         pickedId = pickProxyPoolId(poolIds, strategy, providerId);
       }
       const resolvedProxy = await resolveConnectionProxyConfig({ proxyPoolId: pickedId || "" });
+      throwIfAborted(signal);
       return {
         id: "noauth",
         connectionName: "Public",
@@ -72,20 +321,19 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
 
     const connections = await getProviderConnections({ provider: providerId, isActive: true });
+    throwIfAborted(signal);
     log.debug("AUTH", `${provider} | total connections: ${connections.length}, excludeIds: ${excludeSet.size > 0 ? [...excludeSet].join(",") : "none"}, model: ${model || "any"}`);
-
-    if (connections.length === 0) {
-      log.warn("AUTH", `No credentials for ${provider}`);
-      return null;
-    }
 
     // Antigravity quota cache is lazy: only populated after that account returns 409/429.
     const isAntigravity = providerId === "antigravity";
     const antigravityQuotaCache = isAntigravity && model ? getAntigravityQuotaCache() : null;
 
-    // Filter out model-locked, excluded, and Antigravity quota-exhausted connections.
+    // Filter out cooldown, terminal, model-locked and quota-exhausted accounts.
+    // The same pool is used for affinity validation and normal selection.
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
+      if (["banned", "expired", "credits_exhausted"].includes(c.testStatus)) return false;
+      if (c.rateLimitedUntil && new Date(c.rateLimitedUntil).getTime() > Date.now()) return false;
       if (isModelLockActive(c, model)) return false;
       const enabled = c.providerSpecificData?.enabledModels;
       if (providerId === "codex" && Array.isArray(enabled) && enabled.length && requestedModel && !enabled.includes(requestedModel)) return false;
@@ -111,6 +359,43 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         log.debug("AUTH", `  → ${c.id?.slice(0, 8)} | ${excluded ? "excluded" : ""} ${locked ? `modelLocked(${model}) until ${lockUntil}` : ""}`);
       }
     });
+
+    const settings = await getSettings();
+    throwIfAborted(signal);
+    const ttl = affinityTtlMs(settings);
+    let owner = null;
+    if (identity) {
+      try {
+        owner = await resolveOwner(identity);
+      } catch {
+        affinityLog("affinity_unavailable", identity, null, options?.requestId, "owner_storage_unavailable");
+        return { affinityUnavailable: true, reason: "session ownership storage unavailable", retryable: true };
+      }
+    }
+    throwIfAborted(signal);
+    if (owner?.invalid) {
+      affinityLog("affinity_unavailable", identity, null, options?.requestId, "invalid_owner");
+      return { affinityUnavailable: true, reason: "invalid original account mapping", retryable: false };
+    }
+    if (owner && !availableConnections.some(c => c.id === owner.connectionId)) {
+      const reason = excludeSet.has(owner.connectionId) ? "excluded" : "unavailable_or_locked";
+      affinityLog("affinity_unavailable", identity, owner.connectionId, options?.requestId, `pinned_${reason}`);
+      return { affinityUnavailable: true, reason: `pinned account ${reason}`, retryable: true };
+    }
+
+    // Ciphertext without an owner cannot establish who issued it. TTL=0 does
+    // not grant permission to guess from whichever account happens to be active.
+    if (options?.encryptedContent && !owner) {
+      affinityLog("affinity_unavailable", identity, null, options?.requestId, "encrypted_content_without_pin");
+      return { affinityUnavailable: true, reason: "encrypted_content without an active pin", retryable: false };
+    }
+
+    // Checked after the pin so an encrypted-content request whose pinned
+    // account was deactivated still fails closed instead of 404-ing.
+    if (connections.length === 0) {
+      log.warn("AUTH", `No credentials for ${provider}`);
+      return null;
+    }
 
     if (availableConnections.length === 0) {
       // Find earliest persistent lock or lazy Antigravity quota-cache reset for retry timing.
@@ -140,14 +425,18 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    const settings = await getSettings();
     // Per-provider strategy overrides global setting
     const providerOverride = (settings.providerStrategies || {})[providerId] || {};
     const strategy = providerOverride.fallbackStrategy || settings.fallbackStrategy || "fill-first";
 
     let connection;
+    let affinity = "none";
+    if (owner) {
+      connection = availableConnections.find(c => c.id === owner.connectionId);
+      affinity = "hit";
+    }
     // Pin to preferred connection if specified and available
-    if (preferredConnectionId) {
+    if (!connection && preferredConnectionId) {
       connection = availableConnections.find((c) => c.id === preferredConnectionId);
       if (connection) {
         log.info("AUTH", `${provider} | pinned to ${connection.id?.slice(0, 8)} (${connection.name || connection.email || "unnamed"})`);
@@ -173,10 +462,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         // Stay with current account
         connection = current;
         // Update lastUsedAt and increment count (await to ensure persistence)
-        await updateProviderConnection(connection.id, {
+        await updateConnectionWithSignal(connection.id, {
           lastUsedAt: new Date().toISOString(),
           consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1
-        });
+        }, signal);
       } else {
         // Pick the least recently used (excluding current if possible)
         const sortedByOldest = [...availableConnections].sort((a, b) => {
@@ -189,17 +478,49 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         connection = sortedByOldest[0];
 
         // Update lastUsedAt and reset count to 1 (await to ensure persistence)
-        await updateProviderConnection(connection.id, {
+        await updateConnectionWithSignal(connection.id, {
           lastUsedAt: new Date().toISOString(),
           consecutiveUseCount: 1
-        });
+        }, signal);
       }
     } else {
       // Default: fill-first (already sorted by priority in getProviderConnections)
       connection = availableConnections[0];
     }
 
+    if (identity && !owner) {
+      let claimed;
+      try {
+        claimed = await claimOwner(identity, connection.id);
+      } catch {
+        affinityLog("affinity_unavailable", identity, null, options?.requestId, "owner_storage_unavailable");
+        return { affinityUnavailable: true, reason: "session ownership storage unavailable", retryable: true };
+      }
+      if (claimed.owner.invalid) {
+        affinityLog("affinity_unavailable", identity, null, options?.requestId, "invalid_owner");
+        return { affinityUnavailable: true, reason: "invalid original account mapping", retryable: false };
+      }
+      // A different worker may have won the SQLite insert. Never dispatch the
+      // losing candidate's credentials or proxy configuration.
+      connection = availableConnections.find(c => c.id === claimed.owner.connectionId);
+      if (!connection) {
+        affinityLog("affinity_unavailable", identity, claimed.owner.connectionId, options?.requestId, "pinned_unavailable_or_locked");
+        return { affinityUnavailable: true, reason: "pinned account unavailable_or_locked", retryable: true };
+      }
+      affinity = claimed.created ? "created" : "hit";
+    }
+    throwIfAborted(signal);
+    if (identity) {
+      try {
+        if (ttl > 0) await setPin(identity, connection.id, ttl);
+      } catch {
+        affinityLog("affinity_unavailable", identity, connection.id, options?.requestId, "lease_storage_unavailable");
+        return { affinityUnavailable: true, reason: "session ownership storage unavailable", retryable: true };
+      }
+      affinityLog(affinity === "created" ? "affinity_created" : "affinity_hit", identity, connection.id, options?.requestId);
+    }
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+    throwIfAborted(signal);
 
     return {
       authType: connection.authType,
@@ -220,9 +541,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         connectionNoProxy: resolvedProxy.connectionNoProxy,
         connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
         vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
-        strictProxy: resolvedProxy.strictProxy === true,
+          strictProxy: resolvedProxy.strictProxy === true,
       },
       connectionId: connection.id,
+      affinity,
       // Include current status for optimization check
       testStatus: connection.testStatus,
       lastError: connection.lastError,
@@ -242,16 +564,27 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
  * @param {string} errorText
  * @param {string|null} provider
  * @param {string|null} model - The specific model that triggered the error
- * @returns {{ shouldFallback: boolean, cooldownMs: number }}
+ * @returns {{ shouldFallback: boolean, cooldownMs: number, superseded?: boolean }}
  */
 export async function markAccountUnavailable(connectionId, status, errorText, provider = null, model = null, resetsAtMs = null, options = {}) {
-  if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
-  const connections = await getProviderConnections({ provider });
-  const conn = connections.find(c => c.id === connectionId);
-  const backoffLevel = conn?.backoffLevel || 0;
-
+  const signal = options?.signal || null;
+  const mutationAttempt = options?.mutationAttempt || null;
   // GitHub premium-request exhaustion is account-wide until the next UTC month.
   const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
+  const accountWideMutation = !model || !!githubResetAtMs;
+  const shouldCommit = combineCommitPredicates(
+    options?.shouldCommit,
+    mutationAttempt ? () => canAccountMutationAttemptCommitFailure(mutationAttempt) : null,
+    mutationAttempt && accountWideMutation
+      ? () => canConnectionMutationAttemptCommitFailure(mutationAttempt)
+      : null,
+  );
+  throwIfAborted(signal);
+  if (!connectionId || connectionId === "noauth" || status === HTTP_STATUS.CLIENT_CLOSED_REQUEST) return { shouldFallback: false, cooldownMs: 0 };
+  const connections = await getProviderConnections({ provider });
+  throwIfAborted(signal);
+  const conn = connections.find(c => c.id === connectionId);
+  const backoffLevel = conn?.backoffLevel || 0;
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
   let shouldFallback, cooldownMs, newBackoffLevel;
@@ -270,23 +603,53 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel, resolveProviderId(provider)));
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
+  const routingResult = { shouldFallback: true, cooldownMs };
+
+  // Ordering guards own durable account state only. A newer request can make
+  // this write stale, but it cannot change whether this request's own provider
+  // error is retryable. Preserve the classification so the caller can still
+  // route to another account/model without persisting an obsolete cooldown.
+  if (shouldCommit && !shouldCommit()) return { ...routingResult, superseded: true };
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 200) : "Provider error";
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
-
-  const updated = await updateProviderConnection(connectionId, {
+  const lockUntil = new Date(Object.values(lockUpdate)[0]).getTime();
+  const update = {
     ...lockUpdate,
     testStatus: "unavailable",
     lastError: reason,
     errorCode: status,
     lastErrorAt: new Date().toISOString(),
     backoffLevel: newBackoffLevel ?? backoffLevel
-  }, ...portalVersionGuard(options));
-  // A Portal-managed row rotated to a newer token version while this request was
-  // in flight: the failure belongs to the old token, so it must not lock the new one.
-  if (!updated && options?.expectedPortalTokenVersion !== undefined) {
-    return { shouldFallback: true, cooldownMs, superseded: true };
-  }
+  };
+  let includeConnectionFailure = accountWideMutation;
+  const beforeCommit = (mutationAttempt || options?.beforeCommit) ? () => {
+    options?.beforeCommit?.();
+    if (!mutationAttempt) return;
+
+    // A model-specific lock remains valid even if a newer request for another
+    // model has updated the account. The dashboard-wide status fields do not:
+    // strip those shared fields when this attempt lost connection-wide order.
+    const canCommitSharedState = canConnectionMutationAttemptCommitFailure(mutationAttempt);
+    includeConnectionFailure = accountWideMutation || canCommitSharedState;
+    if (!accountWideMutation && !canCommitSharedState) {
+      for (const key of ["testStatus", "lastError", "errorCode", "lastErrorAt", "backoffLevel"]) {
+        delete update[key];
+      }
+    }
+  } : null;
+  const afterCommit = (mutationAttempt || options?.afterCommit) ? () => {
+    if (mutationAttempt) {
+      recordAccountMutationFailure(mutationAttempt, lockUntil, includeConnectionFailure);
+    }
+    options?.afterCommit?.();
+  } : null;
+
+  const updated = await updateConnectionWithSignal(
+    connectionId, update, signal, shouldCommit, beforeCommit, afterCommit,
+    options?.expectedPortalTokenVersion,
+  );
+  if (updated === null || (shouldCommit && !shouldCommit())) return { ...routingResult, superseded: true };
 
   const lockKey = Object.keys(lockUpdate)[0];
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
@@ -296,7 +659,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
     console.error(`❌ ${provider} [${status}]: ${reason}`);
   }
 
-  return { shouldFallback: true, cooldownMs };
+  return routingResult;
 }
 
 /**
@@ -310,10 +673,17 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
  */
 export async function clearAccountError(connectionId, currentConnection, model = null, options = {}) {
   if (!connectionId || connectionId === "noauth") return;
+  const mutationAttempt = options?.mutationAttempt || null;
+  const shouldCommit = combineCommitPredicates(
+    options?.shouldCommit,
+    mutationAttempt ? () => canAccountMutationAttemptClearFailure(mutationAttempt) : null,
+  );
+  if (shouldCommit && !shouldCommit()) return;
   let conn = currentConnection._connection || currentConnection;
-  if (options?.reloadCurrent) {
-    const connections = await getProviderConnections({ provider: conn.provider });
-    conn = connections.find(c => c.id === connectionId) || conn;
+  if (options?.reloadCurrent || mutationAttempt) {
+    const currentConnections = await getProviderConnections({ provider: conn.provider });
+    conn = currentConnections.find((candidate) => candidate.id === connectionId) || conn;
+    if (shouldCommit && !shouldCommit()) return;
   }
   const now = Date.now();
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));
@@ -350,16 +720,54 @@ export async function clearAccountError(connectionId, currentConnection, model =
     });
   }
 
-  await updateProviderConnection(connectionId, clearObj, ...portalVersionGuard(options));
+  const beforeCommit = () => {
+    options?.beforeCommit?.();
+    if (!mutationAttempt || canConnectionMutationAttemptClearFailure(mutationAttempt)) return;
+
+    // A success for one model may still clear its own stale lock, but it must
+    // not erase a newer account-wide lock or shared error status written by a
+    // different model/request on the same connection.
+    delete clearObj.modelLock___all;
+    for (const key of ["testStatus", "lastError", "errorCode", "lastErrorAt", "backoffLevel"]) {
+      delete clearObj[key];
+    }
+  };
+  const hasUpdates = () => Object.keys(clearObj).length > 0;
+  await updateConnectionWithSignal(
+    connectionId,
+    clearObj,
+    null,
+    combineCommitPredicates(shouldCommit, hasUpdates),
+    beforeCommit,
+    null,
+    options?.expectedPortalTokenVersion,
+  );
 }
 
-// Health writes carry the Portal token version they observed so a late result
-// from a superseded Portal access token cannot touch the rotated credential.
-// Spread as an optional trailing argument: non-Portal calls stay unchanged.
-function portalVersionGuard(options) {
-  return options?.expectedPortalTokenVersion !== undefined
-    ? [{ expectedPortalTokenVersion: options.expectedPortalTokenVersion }]
-    : [];
+async function updateConnectionWithSignal(
+  connectionId,
+  updates,
+  signal,
+  shouldCommit = null,
+  beforeCommit = null,
+  afterCommit = null,
+  expectedPortalTokenVersion = undefined,
+) {
+  throwIfAborted(signal);
+  if (shouldCommit && !shouldCommit()) return null;
+  const guardedOptions = {
+    ...(signal ? { signal } : {}),
+    ...(shouldCommit ? { shouldCommit } : {}),
+    ...(beforeCommit ? { beforeCommit } : {}),
+    ...(afterCommit ? { afterCommit } : {}),
+    ...(expectedPortalTokenVersion !== undefined ? { expectedPortalTokenVersion } : {}),
+  };
+  const result = Object.keys(guardedOptions).length > 0
+    ? await updateProviderConnection(connectionId, updates, guardedOptions)
+    : await updateProviderConnection(connectionId, updates);
+  throwIfAborted(signal);
+  if (shouldCommit && !shouldCommit()) return null;
+  return result;
 }
 
 /**

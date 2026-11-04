@@ -224,7 +224,7 @@
         "tests/unit/dashboard-guard.test.js",
         "tests/unit/db-sqlite-vs-lowdb.test.js"
       ],
-      "overlay_differences": "Not carried from the fork baseline: account-mutation-attempt ordering and generic shouldCommit/beforeCommit/afterCommit/signal hooks (no v0.5.112 caller); only the Portal token-version guard is passed through chat health writes. Added beyond the fork baseline: request-path and usage-route refresh skip Portal rows.",
+      "overlay_differences": "The initial v0.5.112 carry omitted account-mutation ordering and transaction hooks because that tree had no callers. AZO-1210 reconciles current master PR20 (365252e4da550c0c1643d3016e223e48c90512e3), which has live callers: retain attempt ordering, signal/shouldCommit/beforeCommit/afterCommit and the Portal token-version/identity guards together. Request-path and usage-route refresh continue to skip Portal rows.",
       "limitations": [
         "PORTAL_SYNC_TOKEN must be configured out of band; without it the route fails closed (401). No token rotation or per-caller identity beyond the shared bearer.",
         "Only claude and codex providers are accepted.",
@@ -248,6 +248,17 @@
     "regressions": "New carries exercised RED before port: OAuth bounds, HTML-before-success, standalone assets, SQL.js backup, API key validation and gateway monitoring call sites. Bounded error parsing RED 5 failed/2 guard passes; GREEN all seven in the full suite. Combo callback tests explicitly include telemetry metadata; no status/fallback expectation changed.",
     "full_suite": "Initial integration run: 4539 total, 4399 passed including expected failures, 41 assertion failures, 98 skipped, 1 todo. All 41 assertion identities match AZO-1001 baseline (4480 total, 4340 passed, 41 failed); no failed suite added or removed. Existing collection/snapshot failures are not excluded. Exact final tree, build and final AZOX test receipts belong to the PR/issue evidence, not this self-referential manifest.",
     "limits": "Offline source-only qualification; no OAuth, inference, live data, image, SSH or deploy. Production and upstream success-body bounds remain unverified. Manager self-review is not independent review."
+  },
+  "azo_1210_reconciliation": {
+    "pr": "https://github.com/azox-ai/azox-9router/pull/19",
+    "candidate_parent": "2fee998b2145c9a7ad1eccabc25813fa1c7a76bb",
+    "master_parent": "365252e4da550c0c1643d3016e223e48c90512e3",
+    "reviewed_patch_sha256": "5a8bbfaa0995f10c0a68fd6c6a4401dd8f733353652dc557131b91028cf14feb",
+    "carry": "Preserve current-master durable session ownership, frame-aware terminal state, mutation ordering, abort helpers and HTTP499 alongside candidate key access, Portal version/identity guards, bounded HTML rejection, generic400 combo fallback, tool-name/ID and reasoning-alias repairs. The reviewed EOF guard remains typed and rejects OpenAI-to-Claude EOF/DONE before semantic finish; buffered tool arguments never flush on that error.",
+    "test_reconciliation": "EOF callbacks now assert failed outcome and one pending release, not absence of all terminal accounting. Duplicate finish emits one terminal. Terminal callbacks accept state. Positive reasoning fixtures include semantic finish. Handler mocks retain real account-mutation helpers. Protocol errors, no argument release, safe constant errors, usage trailers and cancellation assertions remain active.",
+    "retirement_boundary": "Do not replay the old fork's retired Responses/SSE overlay. Current-master PR20 introduces a different live frame parser and terminal/ownership contract; its implementations and tests remain current-master carries, not evidence that the historical retired overlay was restored or qualified.",
+    "known_review_limits": "Candidate combo success JSON peeks/fusion panel reads remain upstream behavior; current-master bounded combo error-reader/aggregation and fusion cancellation differences require follow-up review. No blanket claim that these response bodies are bounded. CRG unavailable; targeted source/call-site review only. Fresh exact-head qualification and complete failures belong to AZO-1210 attachments, not historical checkpoints above.",
+    "release_status": "Draft only; no master merge, tag, image, deploy or Result acceptance. AZO-1167 PR-link boundary remains blocked."
   },
   "retired_customizations": {
     "contributor": {

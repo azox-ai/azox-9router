@@ -28,7 +28,8 @@ vi.mock("@/lib/disabledModelsDb", () => ({ getDisabledModels: async () => ({}) }
 vi.mock("@/lib/db/repos/combosRepo.js", () => ({ getCombos: async () => fx.combos }));
 vi.mock("@/lib/db/repos/apiKeysRepo.js", () => ({ getApiKeyByKey: async (k) => fx.keys[k] || null }));
 vi.mock("@/lib/usageDb.js", () => ({ saveRequestUsage: vi.fn() }));
-vi.mock("@/sse/services/auth.js", () => ({
+vi.mock("@/sse/services/auth.js", async (importOriginal) => ({
+  ...await importOriginal(),
   getProviderCredentials: mocks.getProviderCredentials,
   markAccountUnavailable: vi.fn(async () => ({ shouldFallback: false })),
   clearAccountError: vi.fn(),
