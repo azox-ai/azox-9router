@@ -1,6 +1,7 @@
 import { convertResponsesStreamToJson } from "../../transformer/streamToJsonConverter.js";
 import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
 import { createErrorResult } from "../../utils/error.js";
+import { createSSEFrameParser, parseSSEFrame } from "../../utils/sseFrameParser.js";
 import { HTTP_STATUS } from "../../config/runtimeConfig.js";
 import { FORMATS } from "../../translator/formats.js";
 import { PROVIDERS } from "../../config/providers.js";
@@ -89,12 +90,14 @@ function chatCompletionToResponses(responseBody, customToolNames = null) {
   }
 
   const usage = responseBody.usage || {};
+  const incomplete = choice.finish_reason === "length" || choice.finish_reason === "max_tokens";
   return {
     id: `resp_${responseBody.id || ""}`.replace(/^resp_chatcmpl-/, "resp_"),
     object: "response",
     created_at: responseBody.created || Math.floor(Date.now() / 1000),
     model: responseBody.model || "unknown",
-    status: "completed",
+    status: incomplete ? "incomplete" : "completed",
+    ...(incomplete ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
     background: false,
     error: null,
     output,
@@ -111,20 +114,25 @@ function chatCompletionToResponses(responseBody, customToolNames = null) {
  * Used when provider forces streaming but client wants non-streaming.
  */
 export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
+  const parser = createSSEFrameParser();
+  return parseSSEFramesToOpenAIResponse([
+    ...parser.push(String(rawSSE || "")), ...parser.finish()
+  ], fallbackModel);
+}
+
+function parseSSEFramesToOpenAIResponse(frames, fallbackModel) {
   const chunks = [];
   let streamError = null;
-
-  for (const line of String(rawSSE || "").split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("data:")) continue;
-    const payload = trimmed.slice(5).trim();
-    if (!payload || payload === "[DONE]") continue;
-    try {
-      const chunk = JSON.parse(payload);
-      if (chunk?.error) streamError = chunk.error;
-      else chunks.push(chunk);
-    } catch { /* ignore malformed lines */ }
-  }
+  const processFrame = (frame) => {
+    const chunk = parseSSEFrame(frame);
+    if (!chunk || chunk.done) return;
+    if (frame.event === "error" || chunk.error || frame.event === "response.failed") {
+      streamError = chunk.error || { message: "Upstream SSE stream failed" };
+    } else {
+      chunks.push(chunk);
+    }
+  };
+  for (const frame of frames) processFrame(frame);
 
   if (streamError) return { error: streamError };
   if (chunks.length === 0) return null;
@@ -133,7 +141,7 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
   const contentParts = [];
   const reasoningParts = [];
   const toolCallMap = new Map(); // index -> { id, type, function: { name, arguments } }
-  let finishReason = "stop";
+  let finishReason = null;
   let usage = null;
 
   for (const chunk of chunks) {
@@ -159,6 +167,8 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
     }
   }
 
+  // [DONE] is only a transport delimiter; an actual finish_reason is required.
+  if (!finishReason) return null;
   const message = { role: "assistant", content: contentParts.join("") || (toolCallMap.size > 0 ? null : "") };
   if (reasoningParts.length > 0) message.reasoning_content = reasoningParts.join("");
   if (toolCallMap.size > 0) {
@@ -174,6 +184,41 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
   };
   if (usage) result.usage = usage;
   return result;
+}
+
+// Read incrementally so a reset after an actual finish cannot turn a successful
+// generation into a gateway error. Usage trailers are retained until DONE/EOF.
+export async function convertChatStreamToJson(stream, fallbackModel) {
+  if (!stream?.getReader) throw new Error("Missing upstream SSE stream");
+  const reader = stream.getReader();
+  const parser = createSSEFrameParser();
+  const frames = [];
+  let finished = false;
+  let doneSeen = false;
+  let eof = false;
+  const collect = (frame) => {
+    const chunk = parseSSEFrame(frame);
+    frames.push(frame);
+    if (chunk?.choices?.[0]?.finish_reason != null) finished = true;
+    if (chunk?.done) doneSeen = true;
+  };
+  try {
+    while (true) {
+      let next;
+      try { next = await reader.read(); }
+      catch (error) { if (finished) break; throw error; }
+      if (next.done) { eof = true; break; }
+      for (const frame of parser.push(next.value)) collect(frame);
+      if (finished && doneSeen) break;
+    }
+    if (eof) for (const frame of parser.finish()) collect(frame);
+  } finally {
+    if (!eof) {
+      try { await reader.cancel(); } catch { /* preserve original failure */ }
+    }
+    reader.releaseLock();
+  }
+  return parseSSEFramesToOpenAIResponse(frames, fallbackModel);
 }
 
 /**
@@ -201,10 +246,11 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
   if (isCodexResponsesApi) {
     try {
       const jsonResponse = await convertResponsesStreamToJson(providerResponse.body);
-      if (onRequestSuccess) await onRequestSuccess();
+      const incomplete = jsonResponse.status === "incomplete";
+      if (!incomplete && onRequestSuccess) await onRequestSuccess();
 
       const usage = jsonResponse.usage || {};
-      appendLog({ tokens: usage, status: "200 OK" });
+      appendLog({ tokens: usage, status: incomplete ? "INCOMPLETE 200" : "200 OK" });
       saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
       if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
 
@@ -221,7 +267,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
         latency: { ttft: totalLatency, total: totalLatency },
         tokens: { prompt_tokens: inTokensForLog, completion_tokens: usage.output_tokens || 0 },
         response: { content: textContent, thinking: null, finish_reason: jsonResponse.status || "unknown" },
-        status: "success"
+        status: incomplete ? "incomplete" : "success"
       }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});
 
       // Client is Responses API → return as-is
@@ -261,7 +307,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       if (sourceFormat === FORMATS.ANTIGRAVITY || sourceFormat === FORMATS.GEMINI || sourceFormat === FORMATS.GEMINI_CLI) {
         finalResp = {
           response: {
-            candidates: [{ content: { role: "model", parts: [{ text: textContent || "" }] }, finishReason: "STOP", index: 0 }],
+            candidates: [{ content: { role: "model", parts: [{ text: textContent || "" }] }, finishReason: incomplete ? "MAX_TOKENS" : "STOP", index: 0 }],
             usageMetadata: { promptTokenCount: inTokens, candidatesTokenCount: outTokens, totalTokenCount: inTokens + outTokens },
             modelVersion: model,
             responseId: jsonResponse.id || `resp_${Date.now()}`
@@ -271,7 +317,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
         const message = { role: "assistant", content: textContent || (hasToolCalls ? null : "") };
         if (hasToolCalls) message.tool_calls = toolCalls;
         const responseDone = jsonResponse.status === "completed" || jsonResponse.status === "done";
-        const finishReason = hasToolCalls ? "tool_calls" : (responseDone ? "stop" : (jsonResponse.status || "stop"));
+        const finishReason = incomplete ? "length" : (hasToolCalls ? "tool_calls" : (responseDone ? "stop" : jsonResponse.status));
         finalResp = {
           id: jsonResponse.id || `chatcmpl-${Date.now()}`,
           object: "chat.completion",
@@ -284,17 +330,21 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
 
       return { success: true, response: new Response(JSON.stringify(restoreToolNames(finalResp, toolNameMap)), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
     } catch (err) {
-      console.error("[ChatCore] Responses API SSE→JSON failed:", err);
-      return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Failed to convert streaming response to JSON");
+      appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
+      console.error("[ChatCore] Responses API SSE→JSON failed:", err?.code || "conversion_error");
+      return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Upstream Responses stream failed or ended before a terminal event");
     }
   }
 
   // Standard Chat Completions SSE path
   try {
-    const sseText = await providerResponse.text();
-    const parsed = parseSSEToOpenAIResponse(sseText, model);
-    if (!parsed) return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid SSE response for non-streaming request");
+    const parsed = await convertChatStreamToJson(providerResponse.body, model);
+    if (!parsed) {
+      appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
+      return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Upstream SSE stream ended before a finish event");
+    }
     if (parsed.error) {
+      appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
       // Structured error chunks may carry the real upstream status (e.g. the
       // Qoder executor emits status 403 for billing envelopes). Preserve it so
       // the account loop locks/falls back on the right status instead of a
@@ -309,10 +359,11 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       );
     }
 
-    if (onRequestSuccess) await onRequestSuccess();
+    const incomplete = parsed.choices?.[0]?.finish_reason === "length" || parsed.choices?.[0]?.finish_reason === "max_tokens";
+    if (!incomplete && onRequestSuccess) await onRequestSuccess();
 
     const usage = parsed.usage || {};
-    appendLog({ tokens: usage, status: "200 OK" });
+    appendLog({ tokens: usage, status: incomplete ? "INCOMPLETE 200" : "200 OK" });
     saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
     if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
 
@@ -326,7 +377,7 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
         thinking: parsed.choices?.[0]?.message?.reasoning_content || null,
         finish_reason: parsed.choices?.[0]?.finish_reason || "unknown"
       },
-      status: "success"
+      status: incomplete ? "incomplete" : "success"
     }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});
 
     // Re-attach usage explicitly. This handler already HAS the correct usage — it is
@@ -362,7 +413,8 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
 
     return { success: true, response: new Response(JSON.stringify(restoreToolNames(finalBody, toolNameMap)), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }) };
   } catch (err) {
-    console.error("[ChatCore] Chat Completions SSE→JSON failed:", err);
-    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Failed to convert streaming response to JSON");
+    appendLog({ status: `FAILED ${HTTP_STATUS.BAD_GATEWAY}` });
+    console.error("[ChatCore] Chat Completions SSE→JSON failed:", err?.code || "conversion_error");
+    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid upstream SSE response for non-streaming request");
   }
 }

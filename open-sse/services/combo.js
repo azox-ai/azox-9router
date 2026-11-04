@@ -319,10 +319,11 @@ function parseRetryDeadline(value, receivedAt, allowDelaySeconds = false) {
  * @param {string} [options.comboName] - Name of the combo (for round-robin tracking)
  * @param {string} [options.comboStrategy] - Strategy: "fallback" or "round-robin"
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
+ * @param {boolean} [options.allowFallback=true] - Whether a failure may try another model
  * @param {AbortSignal} [options.signal] - Client cancellation signal
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, signal }) {
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, allowFallback = true, signal }) {
   if (signal?.aborted) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
   // Apply rotation strategy if enabled
   let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
@@ -365,6 +366,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
         log.info("COMBO", `Model ${modelStr} succeeded`);
         return result;
       }
+      if (!allowFallback) return result;
 
       // Extract error info from response
       let errorText = result.statusText || "";
@@ -395,6 +397,9 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
         : result.bodyUsed
           ? rebuildUpstreamResponse(result, JSON.stringify({ error: { message: errorText || `Upstream HTTP ${result.status}` } }))
           : result;
+
+      // A failed owner must never cause a second provider to receive this session.
+      if (errorCode === "session_affinity_unavailable") return result;
 
       // Track earliest retryAfter across all combo models
       if (retryAfter !== null && (earliestRetryAfter === null || retryAfter < earliestRetryAfter)) {
@@ -442,6 +447,12 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       log.warn("COMBO", `Model ${modelStr} failed, trying next`, { status: result.status });
     } catch (error) {
       if (isAbortError(error, signal)) return errorResponse(HTTP_STATUS.CLIENT_CLOSED_REQUEST, "Request aborted");
+      if (!allowFallback || error?.code === "session_affinity_unavailable") {
+        return new Response(JSON.stringify({ error: {
+          code: "session_affinity_unavailable",
+          message: "The session owner is unavailable. Retry the same session when its original account recovers.",
+        } }), { status: 409, headers: { "Content-Type": "application/json" } });
+      }
       allCredentialsUnavailable = false;
       // Catch unexpected exceptions to ensure fallback continues
       lastFailure = { status: HTTP_STATUS.SERVER_ERROR, message: String(error?.message || error) };

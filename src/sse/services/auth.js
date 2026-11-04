@@ -7,6 +7,7 @@ import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.
 import { getAntigravityQuotaCache } from "./antigravityQuota.js";
 import { throwIfAborted } from "open-sse/utils/abort.js";
 import * as log from "../utils/logger.js";
+import { affinityIdentity, affinityTtlMs, resolveOwner, claimOwner, setPin, affinityLog } from "./sessionAffinity.js";
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
@@ -282,9 +283,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     // Resolve alias to provider ID (e.g., "kc" -> "kilocode")
     const providerId = resolveProviderId(provider);
+    const identity = affinityIdentity(options?.sessionKey, providerId, options?.apiKey);
 
     // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings)
     if (FREE_PROVIDERS[providerId]?.noAuth) {
+      if (options?.encryptedContent) {
+        affinityLog("affinity_unavailable", identity, null, options?.requestId, "no_account_owner");
+        return { affinityUnavailable: true, reason: "provider has no original account mapping", retryable: false };
+      }
       const settings = await getSettings();
       throwIfAborted(signal);
       const override = (settings.providerStrategies || {})[providerId] || {};
@@ -317,18 +323,16 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     throwIfAborted(signal);
     log.debug("AUTH", `${provider} | total connections: ${connections.length}, excludeIds: ${excludeSet.size > 0 ? [...excludeSet].join(",") : "none"}, model: ${model || "any"}`);
 
-    if (connections.length === 0) {
-      log.warn("AUTH", `No credentials for ${provider}`);
-      return null;
-    }
-
     // Antigravity quota cache is lazy: only populated after that account returns 409/429.
     const isAntigravity = providerId === "antigravity";
     const antigravityQuotaCache = isAntigravity && model ? getAntigravityQuotaCache() : null;
 
-    // Filter out model-locked, excluded, and Antigravity quota-exhausted connections.
+    // Filter out cooldown, terminal, model-locked and quota-exhausted accounts.
+    // The same pool is used for affinity validation and normal selection.
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
+      if (["banned", "expired", "credits_exhausted"].includes(c.testStatus)) return false;
+      if (c.rateLimitedUntil && new Date(c.rateLimitedUntil).getTime() > Date.now()) return false;
       if (isModelLockActive(c, model)) return false;
       const enabled = c.providerSpecificData?.enabledModels;
       if (providerId === "codex" && Array.isArray(enabled) && enabled.length && requestedModel && !enabled.includes(requestedModel)) return false;
@@ -353,6 +357,43 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         log.debug("AUTH", `  → ${c.id?.slice(0, 8)} | ${excluded ? "excluded" : ""} ${locked ? `modelLocked(${model}) until ${lockUntil}` : ""}`);
       }
     });
+
+    const settings = await getSettings();
+    throwIfAborted(signal);
+    const ttl = affinityTtlMs(settings);
+    let owner = null;
+    if (identity) {
+      try {
+        owner = await resolveOwner(identity);
+      } catch {
+        affinityLog("affinity_unavailable", identity, null, options?.requestId, "owner_storage_unavailable");
+        return { affinityUnavailable: true, reason: "session ownership storage unavailable", retryable: true };
+      }
+    }
+    throwIfAborted(signal);
+    if (owner?.invalid) {
+      affinityLog("affinity_unavailable", identity, null, options?.requestId, "invalid_owner");
+      return { affinityUnavailable: true, reason: "invalid original account mapping", retryable: false };
+    }
+    if (owner && !availableConnections.some(c => c.id === owner.connectionId)) {
+      const reason = excludeSet.has(owner.connectionId) ? "excluded" : "unavailable_or_locked";
+      affinityLog("affinity_unavailable", identity, owner.connectionId, options?.requestId, `pinned_${reason}`);
+      return { affinityUnavailable: true, reason: `pinned account ${reason}`, retryable: true };
+    }
+
+    // Ciphertext without an owner cannot establish who issued it. TTL=0 does
+    // not grant permission to guess from whichever account happens to be active.
+    if (options?.encryptedContent && !owner) {
+      affinityLog("affinity_unavailable", identity, null, options?.requestId, "encrypted_content_without_pin");
+      return { affinityUnavailable: true, reason: "encrypted_content without an active pin", retryable: false };
+    }
+
+    // Checked after the pin so an encrypted-content request whose pinned
+    // account was deactivated still fails closed instead of 404-ing.
+    if (connections.length === 0) {
+      log.warn("AUTH", `No credentials for ${provider}`);
+      return null;
+    }
 
     if (availableConnections.length === 0) {
       // Find earliest persistent lock or lazy Antigravity quota-cache reset for retry timing.
@@ -380,15 +421,18 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    const settings = await getSettings();
-    throwIfAborted(signal);
     // Per-provider strategy overrides global setting
     const providerOverride = (settings.providerStrategies || {})[providerId] || {};
     const strategy = providerOverride.fallbackStrategy || settings.fallbackStrategy || "fill-first";
 
     let connection;
+    let affinity = "none";
+    if (owner) {
+      connection = availableConnections.find(c => c.id === owner.connectionId);
+      affinity = "hit";
+    }
     // Pin to preferred connection if specified and available
-    if (preferredConnectionId) {
+    if (!connection && preferredConnectionId) {
       connection = availableConnections.find((c) => c.id === preferredConnectionId);
       if (connection) {
         log.info("AUTH", `${provider} | pinned to ${connection.id?.slice(0, 8)} (${connection.name || connection.email || "unnamed"})`);
@@ -440,6 +484,37 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       connection = availableConnections[0];
     }
 
+    if (identity && !owner) {
+      let claimed;
+      try {
+        claimed = await claimOwner(identity, connection.id);
+      } catch {
+        affinityLog("affinity_unavailable", identity, null, options?.requestId, "owner_storage_unavailable");
+        return { affinityUnavailable: true, reason: "session ownership storage unavailable", retryable: true };
+      }
+      if (claimed.owner.invalid) {
+        affinityLog("affinity_unavailable", identity, null, options?.requestId, "invalid_owner");
+        return { affinityUnavailable: true, reason: "invalid original account mapping", retryable: false };
+      }
+      // A different worker may have won the SQLite insert. Never dispatch the
+      // losing candidate's credentials or proxy configuration.
+      connection = availableConnections.find(c => c.id === claimed.owner.connectionId);
+      if (!connection) {
+        affinityLog("affinity_unavailable", identity, claimed.owner.connectionId, options?.requestId, "pinned_unavailable_or_locked");
+        return { affinityUnavailable: true, reason: "pinned account unavailable_or_locked", retryable: true };
+      }
+      affinity = claimed.created ? "created" : "hit";
+    }
+    throwIfAborted(signal);
+    if (identity) {
+      try {
+        if (ttl > 0) await setPin(identity, connection.id, ttl);
+      } catch {
+        affinityLog("affinity_unavailable", identity, connection.id, options?.requestId, "lease_storage_unavailable");
+        return { affinityUnavailable: true, reason: "session ownership storage unavailable", retryable: true };
+      }
+      affinityLog(affinity === "created" ? "affinity_created" : "affinity_hit", identity, connection.id, options?.requestId);
+    }
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
     throwIfAborted(signal);
 
@@ -464,6 +539,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
       },
       connectionId: connection.id,
+      affinity,
       // Include current status for optimization check
       testStatus: connection.testStatus,
       lastError: connection.lastError,

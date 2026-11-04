@@ -4,9 +4,8 @@ import { FORMATS } from "../../open-sse/translator/formats.js";
 import { initState } from "../../open-sse/translator/index.js";
 import { openaiToOpenAIResponsesResponse } from "../../open-sse/translator/response/openai-responses.js";
 
-// targetFormat === OPENAI is the direct openai -> openai-responses route, which is
-// the only one where flush() reaches this translator (see the flushReachesUs note
-// above the finish_reason branch).
+// Exercise the direct Chat -> Responses route, including its deferred usage
+// trailer flush. EOF alone is not evidence of a successful completion.
 function newState() {
   return { ...initState(FORMATS.OPENAI_RESPONSES), targetFormat: FORMATS.OPENAI };
 }
@@ -54,6 +53,7 @@ describe("response.completed output (issue #4307)", () => {
     const state = newState();
     openaiToOpenAIResponsesResponse(textChunk("O"), state);
     openaiToOpenAIResponsesResponse(textChunk("K"), state);
+    openaiToOpenAIResponsesResponse(finishChunk(), state);
     const response = completedResponse(openaiToOpenAIResponsesResponse(null, state));
 
     expect(response.status).toBe("completed");
@@ -117,8 +117,18 @@ describe("response.completed output (issue #4307)", () => {
 
   it("reports an empty output array when nothing was produced", () => {
     const state = newState();
+    openaiToOpenAIResponsesResponse(finishChunk(), state);
     const response = completedResponse(openaiToOpenAIResponsesResponse(null, state));
     expect(response.output).toEqual([]);
+  });
+
+  it.each([{ chunks: [] }, { chunks: [textChunk("partial")] }])("fails closed without finish_reason for $chunks", ({ chunks }) => {
+    const { state, events } = runChunks(chunks);
+    events.push(...openaiToOpenAIResponsesResponse(null, state));
+    expect(events.some((event) => event.event === "response.completed")).toBe(false);
+    const failed = events.find((event) => event.event === "response.failed");
+    expect(failed?.data.response.status).toBe("failed");
+    expect(failed?.data.response.output).toEqual(doneItems(events));
   });
 
   it("keeps the usage block alongside output", () => {

@@ -1,6 +1,9 @@
 // Stream handler with disconnect detection - shared for all providers
 import { STREAM_STALL_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
+import { createSSEFrameParser, parseSSEFrame } from "./sseFrameParser.js";
+import { createStreamTerminalState } from "./streamTerminalState.js";
+import { FORMATS } from "../translator/formats.js";
 
 // Get HH:MM:SS timestamp
 function getTimeString() {
@@ -37,20 +40,24 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
     isConnected: () => !disconnected,
 
     // Call when client disconnects
+    // Returns true when this call ran onDisconnect (which releases pending accounting).
     handleDisconnect: (reason = "client_closed") => {
-      if (disconnected) return;
+      if (disconnected) return false;
       disconnected = true;
 
       // Debug-only: Responses API has no [DONE] sentinel, so codex/droid close the
       // socket on every completed request. "📊 done" is the authoritative outcome line.
       dbg("CTRL", `${provider}/${model} | disconnect=${reason} | dur=${Date.now() - startTime}ms`);
 
-      // Delay abort to allow cleanup
-      abortTimeout = setTimeout(() => {
-        abortController.abort();
-      }, 500);
-
-      onDisconnect?.({ reason, duration: Date.now() - startTime });
+      // A client cancellation cannot receive a terminal event. Abort the fetch
+      // immediately so the reader, upstream pipe and watchdog can be released.
+      if (abortTimeout) clearTimeout(abortTimeout);
+      abortController.abort();
+      // Contain caller errors: cancellation must still finalize accounting.
+      // chatCore's callback releases pending before any external hook runs.
+      try { onDisconnect?.({ reason, duration: Date.now() - startTime }); }
+      catch (err) { dbg("CTRL", `onDisconnect threw: ${err?.message}`); }
+      return Boolean(onDisconnect);
     },
 
     // Call when stream completes normally (no line here — "📊 done" is authoritative)
@@ -64,9 +71,9 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
       }
     },
 
-    // Call on error
+    // Call on error. Returns true when this call ran onError (pending released).
     handleError: (error) => {
-      if (disconnected) return;
+      if (disconnected) return false;
       disconnected = true;
 
       if (abortTimeout) {
@@ -76,11 +83,13 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
 
       if (error.name === "AbortError") {
         logStream("⚡", "ABORTED");
-        return;
+        return false;
       }
 
       logStream("✗", `ERROR: ${error.message}${error.stack ? `\n    ${error.stack}` : ""}`, true);
-      onError?.(error);
+      try { onError?.(error); }
+      catch (err) { dbg("CTRL", `onError threw: ${err?.message}`); }
+      return Boolean(onError);
     },
 
     abort: () => abortController.abort()
@@ -99,79 +108,97 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
  * @param {function} [onAbortTerminal] - Receives a human-readable abort
  * message and returns terminal SSE bytes to emit downstream.
  */
-export function createDisconnectAwareStream(transformStream, streamController, onAbortTerminal = null) {
+export function createDisconnectAwareStream(transformStream, streamController, onAbortTerminal = null, terminalState = null, onTerminate = null, isFinalized = null) {
   const reader = transformStream.readable.getReader();
-  const writer = transformStream.writable.getWriter();
-  let terminalEmitted = false;
+  const writer = transformStream.writable?.getWriter?.();
+  // Direct callers can supply an ordinary ReadableStream, without stream.js's
+  // state. Observe the *forwarded* frames so resets after a terminal stay quiet.
+  const parser = createSSEFrameParser();
+  let observed = terminalState || transformStream.terminalState || null;
+  let cancelled = false;
+  let emittedError = false;
 
-  // Emit a synthesized terminal payload (e.g. Responses response.failed + [DONE]) once
-  const emitTerminal = (controller) => {
-    if (terminalEmitted || !onAbortTerminal) return;
-    terminalEmitted = true;
-    try {
-      const bytes = onAbortTerminal();
-      if (bytes) controller.enqueue(bytes);
-    } catch { /* best-effort terminal */ }
+  const observe = (value) => {
+    if (terminalState) return; // stream.js already observes these chunks
+    for (const frame of parser.push(value)) {
+      let parsed;
+      try { parsed = parseSSEFrame(frame); } catch { continue; }
+      if (!parsed || parsed.done) continue;
+      if (!observed) {
+        const format = parsed.type?.startsWith("response.") ? FORMATS.OPENAI_RESPONSES
+          : parsed.type?.startsWith("message_") ? FORMATS.CLAUDE : FORMATS.OPENAI;
+        observed = createStreamTerminalState(format);
+      }
+      observed.observe(parsed, frame.event, observed.clientFormat);
+    }
+  };
+  const cleanup = () => {
+    Promise.resolve(reader.cancel()).catch(() => {});
+    Promise.resolve(writer?.abort?.()).catch(() => {});
+  };
+  const emitFailure = (controller, message = "upstream connection lost") => {
+    if (cancelled || emittedError || observed?.terminal || !onAbortTerminal) return;
+    emittedError = true;
+    const state = observed || createStreamTerminalState(onAbortTerminal.name === "buildAbortedResponsesTerminalBytes" ? FORMATS.OPENAI_RESPONSES : FORMATS.OPENAI);
+    // Keep the callback's format and stall-specific status where available, but
+    // construct Responses failures from the observed ID and sequence number.
+    const bytes = state.clientFormat === FORMATS.OPENAI_RESPONSES
+      ? state.failureBytes(502, message)
+      : onAbortTerminal(message, state);
+    if (bytes) controller.enqueue(bytes);
+    if (state.clientFormat !== FORMATS.OPENAI_RESPONSES) state.finish("failed");
   };
 
   return new ReadableStream({
     async pull(controller) {
-      if (!streamController.isConnected()) {
-        emitTerminal(controller);
-        controller.close();
-        return;
-      }
-
+      if (cancelled) return;
       try {
         const { done, value } = await reader.read();
-
+        if (cancelled) return;
         if (done) {
+          if (!observed?.terminal) emitFailure(controller);
           streamController.handleComplete();
           controller.close();
           return;
         }
+        try { observe(value); } catch { /* transform itself enforces its buffer bound */ }
         controller.enqueue(value);
       } catch (error) {
-        const wasConnected = streamController.isConnected();
-        // Controller already closed = downstream ended; not an upstream error, skip noisy log.
-        const msg0 = error?.message || "";
-        const isControllerClosed = msg0.includes("already closed") || msg0.includes("Invalid state");
-        if (!isControllerClosed) streamController.handleError(error);
-        reader.cancel().catch(() => {});
-        writer.abort().catch(() => {});
-
-        // Treat network resets / socket hang up / abort as graceful close
-        const msg = error?.message || "";
-        const code = error?.code || error?.cause?.code || "";
-        const isNetworkClose =
-          error.name === "AbortError" ||
-          msg.includes("aborted") ||
-          msg.includes("socket hang up") ||
-          msg.includes("ECONNRESET") ||
-          msg.includes("ETIMEDOUT") ||
-          msg.includes("EPIPE") ||
-          code === "ECONNRESET" ||
-          code === "ETIMEDOUT" ||
-          code === "EPIPE" ||
-          code === "UND_ERR_SOCKET";
-
-        // Graceful close on network/abort, or when a structured terminal is available
-        // (Responses passthrough prefers response.failed + [DONE] over a raw transport error)
-        try {
-          if (!wasConnected || isNetworkClose || onAbortTerminal) {
-            emitTerminal(controller);
-            controller.close();
-          } else {
-            controller.error(error);
-          }
-        } catch (e) { /* already closed or cancelled */ }
+        if (cancelled) return;
+        let pendingReleased = false;
+        if (!observed?.terminal) {
+          pendingReleased = streamController.handleError(error) === true;
+          try { emitFailure(controller, error?.message === "stream stall timeout" ? "stream stall timeout" : "upstream connection lost"); }
+          catch { /* downstream may have closed; never expose raw transport errors */ }
+        } else streamController.handleComplete();
+        // A stall watchdog may have released pending before this read failed.
+        if (streamController.pendingReleased?.()) pendingReleased = true;
+        // An errored transform never runs flush(): close request detail/usage here.
+        try { onTerminate?.(pendingReleased); } catch { /* accounting must not break the response */ }
+        cleanup();
+        try { controller.close(); } catch { /* already closed */ }
       }
     },
-
-    cancel(reason) {
-      streamController.handleDisconnect(reason || "cancelled");
-      reader.cancel();
-      writer.abort();
+    async cancel(reason) {
+      if (cancelled) return;
+      cancelled = true;
+      if (isFinalized?.()) {
+        // Accounting already closed on the terminal event (Responses clients
+        // close the socket right after it): release the upstream without a
+        // second pending decrement via onDisconnect.
+        streamController.handleComplete();
+        streamController.abort?.();
+      } else {
+        const pendingReleased = streamController.handleDisconnect(reason || "cancelled") === true
+          || streamController.pendingReleased?.() === true;
+        try { onTerminate?.(pendingReleased); } catch { /* account finalization cannot write to the closed client */ }
+      }
+      // Await propagation so the upstream body is released before the client
+      // cancellation settles (pipeThrough chains cancel asynchronously).
+      await Promise.allSettled([
+        Promise.resolve().then(() => reader.cancel(reason)),
+        Promise.resolve().then(() => writer?.abort?.(reason)),
+      ]);
     }
   });
 }
@@ -198,6 +225,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   let totalBytes = 0;
   let lastChunkAt = Date.now();
   let abortMessage = "upstream connection lost";
+  let pendingReleased = false;
   const t0 = Date.now();
   const tag = "STREAM";
   const clearStall = () => {
@@ -209,7 +237,13 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       stallTimer = null;
       abortMessage = "stream stall timeout";
       dbg(tag, `STALL TIMEOUT ${stallTimeoutMs}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${Date.now() - lastChunkAt}ms`);
-      streamController.handleError?.(new Error("stream stall timeout"));
+      if (transformStream.isFinalized?.()) {
+        // Accounting already closed on the terminal event; only release the
+        // idle upstream socket, never decrement pending a second time.
+        streamController.handleComplete();
+      } else if (streamController.handleError?.(new Error("stream stall timeout")) === true) {
+        pendingReleased = true;
+      }
       streamController.abort?.();
     }, stallTimeoutMs);
   };
@@ -221,9 +255,12 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     signal: streamController.signal,
     startTime: streamController.startTime,
     isConnected: () => streamController.isConnected(),
+    pendingReleased: () => pendingReleased,
     handleComplete: () => { dbg(tag, `complete | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleComplete(); },
-    handleError: (e) => { dbg(tag, `error: ${e?.message} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleError(e); },
-    handleDisconnect: (r) => { dbg(tag, `disconnect: ${r} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleDisconnect(r); },
+    // The stall timer can run handleError before pull() sees the abort; remember
+    // that it released pending accounting so finalization does not release twice.
+    handleError: (e) => { dbg(tag, `error: ${e?.message} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); if (streamController.handleError(e) === true) pendingReleased = true; return pendingReleased; },
+    handleDisconnect: (r) => { dbg(tag, `disconnect: ${r} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); if (streamController.handleDisconnect(r) === true) pendingReleased = true; return pendingReleased; },
     abort: () => { clearStall(); streamController.abort(); }
   };
 
@@ -254,7 +291,10 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   return createDisconnectAwareStream(
     { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) } },
     wrappedController,
-    onAbortTerminal ? () => onAbortTerminal(abortMessage) : null
+    onAbortTerminal ? (message, state) => onAbortTerminal(abortMessage === "stream stall timeout" ? abortMessage : message, state) : null,
+    transformStream.terminalState,
+    transformStream.finalizeTerminated,
+    transformStream.isFinalized
   );
 }
 

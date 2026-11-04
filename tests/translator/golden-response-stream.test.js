@@ -1,10 +1,13 @@
 // P0 GOLDEN: lock OUTPUT của translateResponse (stream) cho các concern đặc biệt.
 // Feed chuỗi chunk THẬT (shape provider) → snapshot mảng chunk openai emit.
 // Sau refactor chạy lại phải khớp y hệt (chunk/usage/thinking/tool/finish).
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import "./registerAll.js";
 import { translateResponse, initState } from "../../open-sse/translator/index.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
+import { createSSETransformStreamWithLogger } from "../../open-sse/utils/stream.js";
+
+vi.mock("@/lib/usageDb.js", () => ({ trackPendingRequest: vi.fn(), appendRequestLog: vi.fn(async () => {}) }));
 
 // Chuẩn hoá field động (Date.now trong created + id) để snapshot ổn định.
 function stripVolatile(chunks) {
@@ -109,10 +112,25 @@ describe("GOLDEN response stream: OpenAI-Responses (codex) → OpenAI", () => {
     expect(runStream(FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI, events)).toMatchSnapshot();
   });
 
-  it("error event → error chunk (fallback id/created)", () => {
-    const events = [
-      { type: "error", error: { message: "model_not_found" } },
-    ];
-    expect(runStream(FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI, events)).toMatchSnapshot();
+  it("error event → API error frame + one DONE, never assistant stop", async () => {
+    const encoder = new TextEncoder();
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: error\ndata: {"type":"error","error":{"message":"model_not_found"}}\n\n'));
+        controller.close();
+      },
+    });
+    const decoder = new TextDecoder();
+    let text = "";
+    for await (const bytes of source.pipeThrough(createSSETransformStreamWithLogger(FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI, "codex"))) {
+      text += decoder.decode(bytes, { stream: true });
+    }
+    text += decoder.decode();
+    const frames = text.split(/\r?\n\r?\n/).flatMap(frame => frame.split(/\r?\n/).filter(line => line.startsWith("data: ")).map(line => line.slice(6)));
+    expect(frames).toHaveLength(2);
+    expect(JSON.parse(frames[0])).toMatchObject({ error: { message: "Upstream stream failed" } });
+    expect(frames[1]).toBe("[DONE]");
+    expect(text).not.toContain("chat.completion.chunk");
+    expect(text).not.toContain("finish_reason");
   });
 });
