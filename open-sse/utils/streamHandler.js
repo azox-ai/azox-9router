@@ -2,6 +2,8 @@
 import { STREAM_STALL_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
+const INCOMPLETE_STREAM_MESSAGE = "incomplete upstream stream (missing finish_reason)";
+
 // Get HH:MM:SS timestamp
 function getTimeString() {
   return new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -96,8 +98,8 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
  * for long periods while raw bytes still flow (e.g. Kiro EventStream
  * binary frames buffering, Claude reasoning streams).
  *
- * @param {function} [onAbortTerminal] - Receives a human-readable abort
- * message and returns terminal SSE bytes to emit downstream.
+ * @param {function} [onAbortTerminal] - Receives an optional caught error
+ * and returns terminal SSE bytes to emit downstream.
  */
 export function createDisconnectAwareStream(transformStream, streamController, onAbortTerminal = null) {
   const reader = transformStream.readable.getReader();
@@ -105,11 +107,11 @@ export function createDisconnectAwareStream(transformStream, streamController, o
   let terminalEmitted = false;
 
   // Emit a synthesized terminal payload (e.g. Responses response.failed + [DONE]) once
-  const emitTerminal = (controller) => {
+  const emitTerminal = (controller, error) => {
     if (terminalEmitted || !onAbortTerminal) return;
     terminalEmitted = true;
     try {
-      const bytes = onAbortTerminal();
+      const bytes = onAbortTerminal(error);
       if (bytes) controller.enqueue(bytes);
     } catch { /* best-effort terminal */ }
   };
@@ -159,7 +161,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
         // (Responses passthrough prefers response.failed + [DONE] over a raw transport error)
         try {
           if (!wasConnected || isNetworkClose || onAbortTerminal) {
-            emitTerminal(controller);
+            emitTerminal(controller, error);
             controller.close();
           } else {
             controller.error(error);
@@ -254,7 +256,8 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   return createDisconnectAwareStream(
     { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) } },
     wrappedController,
-    onAbortTerminal ? () => onAbortTerminal(abortMessage) : null
+    // Only the typed incomplete-stream code gets its own constant; never forward error text.
+    onAbortTerminal ? (error) => onAbortTerminal(error?.code === "INCOMPLETE_STREAM" ? INCOMPLETE_STREAM_MESSAGE : abortMessage) : null
   );
 }
 

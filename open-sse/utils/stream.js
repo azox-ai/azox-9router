@@ -538,6 +538,12 @@ export function createSSEStream(options = {}) {
           }
         }
 
+        // EOF is not semantic completion: do not flush buffered tool args without a finish.
+        if (mode === STREAM_MODE.TRANSLATE && targetFormat === FORMATS.OPENAI &&
+            sourceFormat === FORMATS.CLAUDE && !state.finishReason) {
+          throw Object.assign(new Error("incomplete upstream stream (missing finish_reason)"), { code: "INCOMPLETE_STREAM" });
+        }
+
         const flushed = translateResponse(targetFormat, sourceFormat, null, state);
 
         if (flushed?._openaiIntermediate) {
@@ -575,6 +581,10 @@ export function createSSEStream(options = {}) {
 
         finalizeStream();
       } catch (error) {
+        if (error?.code === "INCOMPLETE_STREAM") {
+          if (completionFlushTimer) { clearTimeout(completionFlushTimer); completionFlushTimer = null; }
+          throw error;
+        }
         console.log("Error in flush:", error);
         finalizeStream();
       }
