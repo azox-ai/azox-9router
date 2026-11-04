@@ -97,7 +97,10 @@ describe("assistant prefill error classification", () => {
     const response400 = () => new Response(JSON.stringify({
       error: { type: "invalid_request_error", message: "max_tokens must be positive" },
     }), { status: 400, headers: { "Content-Type": "application/json" } });
-    const handleSingleModel = vi.fn().mockImplementation(async () => response400());
+    const rejected = [response400(), response400()];
+    const handleSingleModel = vi.fn()
+      .mockResolvedValueOnce(rejected[0])
+      .mockResolvedValueOnce(rejected[1]);
 
     expect(checkFallbackError(400, "max_tokens must be positive", 2)).toEqual({
       shouldFallback: false,
@@ -113,8 +116,11 @@ describe("assistant prefill error classification", () => {
       autoSwitch: false,
     });
 
+    // Upstream request-scoped contract: the first rejection is returned as the
+    // same Response object, not a rebuilt copy with synthetic headers.
+    expect(response).toBe(rejected[0]);
     expect(response.status).toBe(400);
-    expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(response.headers.get("content-type")).toBe("application/json");
     expect(await response.json()).toEqual({
       error: { type: "invalid_request_error", message: "max_tokens must be positive" },
     });
