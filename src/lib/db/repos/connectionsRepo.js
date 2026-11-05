@@ -245,13 +245,19 @@ export function createProviderConnectionInTransaction(db, data, { deduplicate = 
   return conn;
 }
 
-export async function createProviderConnection(data) {
+export async function createProviderConnection(data, options = {}) {
   data = withoutPortalIdentity(data);
   const db = await getAdapter();
+  // OAuth callers pass shouldCommit so a cancelled/superseded session never writes.
+  if (options.shouldCommit && !options.shouldCommit()) return null;
   const now = new Date().toISOString();
   let result;
 
   db.transaction(() => {
+    if (options.shouldCommit && !options.shouldCommit()) {
+      result = null;
+      return;
+    }
     // apikey connections are deduped by name and need only the current max
     // priority, so query for those directly instead of loading the whole pool
     // (O(pool) per key — the other half of the import cost in #4311). The oauth

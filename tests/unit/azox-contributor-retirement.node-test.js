@@ -45,28 +45,40 @@ test("Contributor is not allowed through the public dashboard guard", () => {
   assert.deepEqual(upstreamLines.filter(line => !candidateLines.has(line)), []);
 });
 
-test("direct-login OAuth remains upstream, not Contributor-overridden", () => {
-  const oauth = "src/app/api/oauth/[provider]/[action]/route.js";
-  assert.equal(source(oauth), source(oauth, upstream));
-  assert.match(source(oauth), /export async function POST\(request, \{ params \}\) \{/);
+test("direct-login OAuth retains normal handlers without Contributor hooks", () => {
+  // A12/A14 authorize normal-login hardening; whole-file upstream equality would
+  // forbid those fixes. Behavioral OAuth suites qualify that separate boundary.
+  const oauth = source("src/app/api/oauth/[provider]/[action]/route.js");
+  assert.doesNotMatch(oauth, /contribut|commitProviderConnection|reservation/i);
+  assert.match(oauth, /export async function POST\(request, \{ params \}\) \{/);
+  assert.match(oauth, /createProviderConnection/);
 });
 
 test("connection persistence carries no Contributor commit hook", () => {
-  // connectionsRepo.js legitimately changes for portal_credential_sync. Assert
-  // the Contributor overlay (reservation commit hook) is absent instead of
-  // requiring the whole file to equal upstream.
+  // connectionsRepo.js legitimately changes for portal_credential_sync and the
+  // ordinary OAuth shouldCommit guard (A14). Assert the Contributor overlay
+  // (reservation commit hook) is absent instead of requiring upstream equality.
   const repo = source("src/lib/db/repos/connectionsRepo.js");
-  assert.doesNotMatch(repo, /contribut|shouldCommit|commitProviderConnection|reservation/i);
-  assert.match(repo, /^export async function createProviderConnection\(data\) \{$/m);
+  assert.doesNotMatch(repo, /contribut|commitProviderConnection|reservation/i);
+  assert.match(repo, /^export async function createProviderConnection\(data, options = \{\}\) \{$/m);
 });
 
-test("manifest retires Contributor without claiming a production rollout", () => {
+test("combo import/export is retired with its dashboard page and API route", () => {
+  const paths = routes();
+  assert.equal(paths.some(path => path.startsWith("src/app/(dashboard)/dashboard/import-export/")), false);
+  assert.equal(paths.some(path => path.startsWith("src/app/api/import-export/")), false);
+  assert.doesNotMatch(source("src/lib/db/repos/combosRepo.js"), /importComboItems/);
+  assert.doesNotMatch(source("src/lib/db/index.js"), /importComboItems/);
+});
+
+test("manifest retires Contributor and combo import/export without claiming a production rollout", () => {
   const manifest = JSON.parse(source("docs/CUSTOMIZATIONS.yaml"));
   assert.equal(manifest.retired_customizations.contributor.classification, "retire");
   assert.equal(manifest.retired_customizations.contributor.deployed, false);
+  assert.equal(manifest.retired_customizations.combo_import_export.classification, "retire");
   assert.equal(manifest.provisional_contracts?.contributor, undefined);
   assert.deepEqual(Object.keys(manifest.supported_customizations).sort(), [
-    "claude_assistant_prefill", "claude_cache", "combo_import_export", "portal_credential_sync",
+    "claude_assistant_prefill", "claude_cache", "portal_credential_sync",
   ]);
   assert.doesNotMatch(JSON.stringify(manifest.supported_customizations), /contribut/i);
 });

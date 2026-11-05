@@ -38,7 +38,7 @@ export {
 // Combos
 export {
   getCombos, getComboById, getComboByName,
-  createCombo, updateCombo, deleteCombo, importComboItems,
+  createCombo, updateCombo, deleteCombo,
 } from "./repos/combosRepo.js";
 
 // Aliases (model + custom + mitm)

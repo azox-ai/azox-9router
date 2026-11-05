@@ -128,6 +128,7 @@ export function waitForCallback(timeoutMs = 300000) {
 // Singleton proxy server for Codex OAuth callback on fixed port
 let codexProxyServer = null;
 let codexProxyTimeout = null;
+let codexProxyGeneration = 0;
 
 const CODEX_PROXY_TIMEOUT_MS = 300000; // 5 minutes
 const CODEX_PORT = CODEX_CONFIG.fixedPort;
@@ -140,8 +141,9 @@ const pendingExchanges = new Map();
  * Modal client calls this before opening popup.
  */
 export function registerCodexSession({ state, codeVerifier, redirectUri }) {
-  if (!state || !codeVerifier || !redirectUri) return false;
+  if (!codexProxyServer || !state || !codeVerifier || !redirectUri) return false;
   pendingExchanges.set(state, {
+    _proxyGeneration: codexProxyGeneration,
     codeVerifier,
     redirectUri,
     status: "pending",
@@ -160,8 +162,22 @@ export function getCodexSessionStatus(state) {
 /**
  * Clear a session (called after modal consumes status).
  */
-export function clearCodexSession(state) {
-  pendingExchanges.delete(state);
+export function clearCodexSession(state, expectedSession = null) {
+  if (expectedSession && pendingExchanges.get(state) !== expectedSession) return false;
+  return pendingExchanges.delete(state);
+}
+
+export function isCodexSessionCurrent(state, session) {
+  return !!codexProxyServer && !!session && pendingExchanges.get(state) === session
+    && session._proxyGeneration === codexProxyGeneration && session.status === "exchanging";
+}
+
+export function claimCodexSession(state) {
+  const session = pendingExchanges.get(state);
+  if (!codexProxyServer || !session || session._proxyGeneration !== codexProxyGeneration
+      || session.status !== "pending") return null;
+  session.status = "exchanging";
+  return session;
 }
 
 function escapeHtml(str) {
@@ -198,6 +214,7 @@ export function startCodexProxy(appPort) {
       return;
     }
 
+    const generation = ++codexProxyGeneration;
     const server = http.createServer(async (req, res) => {
       const url = new URL(req.url, "http://localhost");
 
@@ -207,10 +224,21 @@ export function startCodexProxy(appPort) {
         return;
       }
 
+      if (codexProxyServer !== server || codexProxyGeneration !== generation) {
+        res.writeHead(409);
+        res.end("OAuth session is no longer active");
+        return;
+      }
       const code = url.searchParams.get("code");
       const state = url.searchParams.get("state");
       const errorParam = url.searchParams.get("error");
-      const session = state ? pendingExchanges.get(state) : null;
+      const registeredSession = state ? pendingExchanges.get(state) : null;
+      const session = claimCodexSession(state);
+      if (registeredSession && !session) {
+        res.writeHead(409);
+        res.end("OAuth session is no longer active");
+        return;
+      }
 
       // Mode A: server-side exchange (session registered)
       if (session) {
@@ -231,6 +259,9 @@ export function startCodexProxy(appPort) {
             session.codeVerifier,
             state
           );
+          const shouldCommit = () => codexProxyServer === server
+            && isCodexSessionCurrent(state, session);
+          if (!shouldCommit()) throw new Error("OAuth session is no longer active");
           const connection = await createProviderConnection({
             provider: "codex",
             authType: "oauth",
@@ -239,7 +270,8 @@ export function startCodexProxy(appPort) {
               ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString()
               : null,
             testStatus: "active",
-          });
+          }, { shouldCommit });
+          if (!connection || !shouldCommit()) throw new Error("OAuth session is no longer active");
 
           session.status = "done";
           session.connectionId = connection.id;
@@ -249,11 +281,11 @@ export function startCodexProxy(appPort) {
           res.end(renderCodexResultPage(true, "You can close this window."));
         } catch (err) {
           session.status = "error";
-          session.error = err.message;
+          session.error = "OAuth authentication failed";
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-          res.end(renderCodexResultPage(false, err.message));
+          res.end(renderCodexResultPage(false, "OAuth authentication failed"));
         } finally {
-          stopCodexProxy();
+          stopCodexProxy(undefined, generation);
         }
         return;
       }
@@ -262,20 +294,26 @@ export function startCodexProxy(appPort) {
       const redirectUrl = `http://localhost:${appPort}/callback${url.search}`;
       res.writeHead(302, { Location: redirectUrl });
       res.end();
-      stopCodexProxy();
+      stopCodexProxy(undefined, generation);
     });
 
+    codexProxyServer = server;
     server.listen(CODEX_PORT, "127.0.0.1", () => {
-      codexProxyServer = server;
-      codexProxyTimeout = setTimeout(() => stopCodexProxy(), CODEX_PROXY_TIMEOUT_MS);
+      if (codexProxyServer !== server || codexProxyGeneration !== generation) {
+        server.close();
+        resolve({ success: false, reason: "cancelled" });
+        return;
+      }
+      codexProxyTimeout = setTimeout(() => stopCodexProxy(undefined, generation), CODEX_PROXY_TIMEOUT_MS);
       resolve({ success: true });
     });
 
     server.on("error", (err) => {
+      if (codexProxyServer === server) codexProxyServer = null;
       if (err.code === "EADDRINUSE") {
         resolve({ success: false, reason: "port_busy" });
       } else {
-        resolve({ success: false, reason: err.message });
+        resolve({ success: false, reason: "proxy_start_failed" });
       }
     });
   });
@@ -284,15 +322,15 @@ export function startCodexProxy(appPort) {
 /**
  * Stop the Codex proxy server and cleanup
  */
-export function stopCodexProxy() {
-  if (codexProxyTimeout) {
-    clearTimeout(codexProxyTimeout);
-    codexProxyTimeout = null;
+export function stopCodexProxy(_owner, expectedGeneration = codexProxyGeneration) {
+  if (expectedGeneration !== codexProxyGeneration) return false;
+  if (codexProxyTimeout) { clearTimeout(codexProxyTimeout); codexProxyTimeout = null; }
+  if (codexProxyServer) { codexProxyServer.close(); codexProxyServer = null; }
+  for (const [state, session] of pendingExchanges) {
+    if (session._proxyGeneration === expectedGeneration
+        && (session.status === "pending" || session.status === "exchanging")) pendingExchanges.delete(state);
   }
-  if (codexProxyServer) {
-    codexProxyServer.close();
-    codexProxyServer = null;
-  }
+  return true;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -303,13 +341,15 @@ export function stopCodexProxy() {
 
 let xaiProxyServer = null;
 let xaiProxyTimeout = null;
+let xaiProxyGeneration = 0;
 const XAI_PROXY_TIMEOUT_MS = 300000; // 5 minutes
 const XAI_PROXY_PORT = 56121;
 const xaiPendingExchanges = new Map();
 
 export function registerXaiSession({ state, codeVerifier, redirectUri }) {
-  if (!state || !codeVerifier || !redirectUri) return false;
+  if (!xaiProxyServer || !state || !codeVerifier || !redirectUri) return false;
   xaiPendingExchanges.set(state, {
+    _proxyGeneration: xaiProxyGeneration,
     codeVerifier,
     redirectUri,
     status: "pending",
@@ -322,8 +362,22 @@ export function getXaiSessionStatus(state) {
   return xaiPendingExchanges.get(state) || null;
 }
 
-export function clearXaiSession(state) {
-  xaiPendingExchanges.delete(state);
+export function clearXaiSession(state, expectedSession = null) {
+  if (expectedSession && xaiPendingExchanges.get(state) !== expectedSession) return false;
+  return xaiPendingExchanges.delete(state);
+}
+
+export function isXaiSessionCurrent(state, session) {
+  return !!xaiProxyServer && !!session && xaiPendingExchanges.get(state) === session
+    && session._proxyGeneration === xaiProxyGeneration && session.status === "exchanging";
+}
+
+export function claimXaiSession(state) {
+  const session = xaiPendingExchanges.get(state);
+  if (!xaiProxyServer || !session || session._proxyGeneration !== xaiProxyGeneration
+      || session.status !== "pending") return null;
+  session.status = "exchanging";
+  return session;
 }
 
 function renderXaiResultPage(success, message) {
@@ -342,6 +396,7 @@ export function startXaiProxy(appPort) {
       return;
     }
 
+    const generation = ++xaiProxyGeneration;
     const server = http.createServer(async (req, res) => {
       const url = new URL(req.url, "http://localhost");
       if (url.pathname !== "/callback" && url.pathname !== "/auth/callback") {
@@ -350,10 +405,21 @@ export function startXaiProxy(appPort) {
         return;
       }
 
+      if (xaiProxyServer !== server || xaiProxyGeneration !== generation) {
+        res.writeHead(409);
+        res.end("OAuth session is no longer active");
+        return;
+      }
       const code = url.searchParams.get("code");
       const state = url.searchParams.get("state");
       const errorParam = url.searchParams.get("error");
-      const session = state ? xaiPendingExchanges.get(state) : null;
+      const registeredSession = state ? xaiPendingExchanges.get(state) : null;
+      const session = claimXaiSession(state);
+      if (registeredSession && !session) {
+        res.writeHead(409);
+        res.end("OAuth session is no longer active");
+        return;
+      }
 
       // Mode A: server-side exchange
       if (session) {
@@ -373,6 +439,9 @@ export function startXaiProxy(appPort) {
             session.codeVerifier,
             state
           );
+          const shouldCommit = () => xaiProxyServer === server
+            && isXaiSessionCurrent(state, session);
+          if (!shouldCommit()) throw new Error("OAuth session is no longer active");
           const connection = await createProviderConnection({
             provider: "xai",
             authType: "oauth",
@@ -381,7 +450,8 @@ export function startXaiProxy(appPort) {
               ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString()
               : null,
             testStatus: "active",
-          });
+          }, { shouldCommit });
+          if (!connection || !shouldCommit()) throw new Error("OAuth session is no longer active");
 
           session.status = "done";
           session.connectionId = connection.id;
@@ -391,11 +461,11 @@ export function startXaiProxy(appPort) {
           res.end(renderXaiResultPage(true, "You can close this window."));
         } catch (err) {
           session.status = "error";
-          session.error = err.message;
+          session.error = "OAuth authentication failed";
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-          res.end(renderXaiResultPage(false, err.message));
+          res.end(renderXaiResultPage(false, "OAuth authentication failed"));
         } finally {
-          stopXaiProxy();
+          stopXaiProxy(undefined, generation);
         }
         return;
       }
@@ -404,34 +474,40 @@ export function startXaiProxy(appPort) {
       const redirectUrl = `http://localhost:${appPort}/callback${url.search}`;
       res.writeHead(302, { Location: redirectUrl });
       res.end();
-      stopXaiProxy();
+      stopXaiProxy(undefined, generation);
     });
 
+    xaiProxyServer = server;
     server.listen(XAI_PROXY_PORT, "127.0.0.1", () => {
-      xaiProxyServer = server;
-      xaiProxyTimeout = setTimeout(() => stopXaiProxy(), XAI_PROXY_TIMEOUT_MS);
+      if (xaiProxyServer !== server || xaiProxyGeneration !== generation) {
+        server.close();
+        resolve({ success: false, reason: "cancelled" });
+        return;
+      }
+      xaiProxyTimeout = setTimeout(() => stopXaiProxy(undefined, generation), XAI_PROXY_TIMEOUT_MS);
       resolve({ success: true });
     });
 
     server.on("error", (err) => {
+      if (xaiProxyServer === server) xaiProxyServer = null;
       if (err.code === "EADDRINUSE") {
         resolve({ success: false, reason: "port_busy" });
       } else {
-        resolve({ success: false, reason: err.message });
+        resolve({ success: false, reason: "proxy_start_failed" });
       }
     });
   });
 }
 
-export function stopXaiProxy() {
-  if (xaiProxyTimeout) {
-    clearTimeout(xaiProxyTimeout);
-    xaiProxyTimeout = null;
+export function stopXaiProxy(_owner, expectedGeneration = xaiProxyGeneration) {
+  if (expectedGeneration !== xaiProxyGeneration) return false;
+  if (xaiProxyTimeout) { clearTimeout(xaiProxyTimeout); xaiProxyTimeout = null; }
+  if (xaiProxyServer) { xaiProxyServer.close(); xaiProxyServer = null; }
+  for (const [state, session] of xaiPendingExchanges) {
+    if (session._proxyGeneration === expectedGeneration
+        && (session.status === "pending" || session.status === "exchanging")) xaiPendingExchanges.delete(state);
   }
-  if (xaiProxyServer) {
-    xaiProxyServer.close();
-    xaiProxyServer = null;
-  }
+  return true;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -442,11 +518,13 @@ export function stopXaiProxy() {
 let traeProxyServer = null;
 let traeProxyTimeout = null;
 let traeProxyPort = null;
+let traeProxyGeneration = 0;
 let traeSession = null;
 
 export function registerTraeSession({ state }) {
   if (!state) return false;
-  traeSession = { state, status: "pending", createdAt: Date.now() };
+  if (!traeProxyServer) return false;
+  traeSession = { state, _proxyGeneration: traeProxyGeneration, status: "pending", createdAt: Date.now() };
   return true;
 }
 export function getTraeSessionStatus(state) {
@@ -464,6 +542,7 @@ export function startTraeProxy() {
       resolve({ success: true, port: traeProxyPort, callbackUrl: `http://127.0.0.1:${traeProxyPort}${TRAE_CONFIG.callbackPath}` });
       return;
     }
+    const generation = ++traeProxyGeneration;
     const server = http.createServer(async (req, res) => {
       const url = new URL(req.url, "http://localhost");
       if (url.pathname !== TRAE_CONFIG.callbackPath && url.pathname !== "/auth/callback") {
@@ -472,7 +551,7 @@ export function startTraeProxy() {
         return;
       }
       const session = traeSession;
-      if (!session) {
+      if (!session || session._proxyGeneration !== generation || traeProxyServer !== server) {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderCodexResultPage(false, "No active Trae login session"));
         return;
@@ -486,19 +565,25 @@ export function startTraeProxy() {
       }
       const cbState = url.searchParams.get("state");
       if (cbState && session.state && cbState !== session.state) {
-        session.status = "error";
-        session.error = "Trae callback state mismatch";
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(renderCodexResultPage(false, session.error));
-        stopTraeProxy();
+        res.writeHead(409, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderCodexResultPage(false, "Trae callback state mismatch"));
         return;
       }
       // Pass the raw callback query to exchangeTokens → parseTraeCallback
+      if (session.status !== "pending") {
+        res.writeHead(409);
+        res.end("OAuth session is no longer active");
+        return;
+      }
+      session.status = "exchanging";
       const rawCallback = `${url.pathname}?${url.searchParams.toString()}`;
       try {
         const { exchangeTokens } = await import("../providers.js");
         const { createProviderConnection } = await import("@/models");
         const tokenData = await exchangeTokens("trae", rawCallback);
+        const shouldCommit = () => traeSession === session && session.status === "exchanging"
+          && traeProxyServer === server && traeProxyGeneration === generation;
+        if (!shouldCommit()) throw new Error("OAuth session is no longer active");
         const connection = await createProviderConnection({
           provider: "trae",
           authType: "oauth",
@@ -507,7 +592,8 @@ export function startTraeProxy() {
             ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString()
             : null,
           testStatus: "active",
-        });
+        }, { shouldCommit });
+        if (!connection || !shouldCommit()) throw new Error("OAuth session is no longer active");
         session.status = "done";
         session.connectionId = connection.id;
         session.email = connection.email;
@@ -515,27 +601,39 @@ export function startTraeProxy() {
         res.end(renderCodexResultPage(true, "You can close this window."));
       } catch (err) {
         session.status = "error";
-        session.error = err.message;
+        session.error = "OAuth authentication failed";
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(renderCodexResultPage(false, err.message));
+        res.end(renderCodexResultPage(false, "OAuth authentication failed"));
       } finally {
-        stopTraeProxy();
+        stopTraeProxy(undefined, generation);
       }
     });
+    traeProxyServer = server;
     server.listen(0, "127.0.0.1", () => {
-      traeProxyServer = server;
+      if (traeProxyServer !== server || traeProxyGeneration !== generation) {
+        server.close();
+        resolve({ success: false, reason: "cancelled" });
+        return;
+      }
       traeProxyPort = server.address().port;
-      traeProxyTimeout = setTimeout(() => stopTraeProxy(), TRAE_CONFIG.oauthTimeoutMs);
+      traeProxyTimeout = setTimeout(() => stopTraeProxy(undefined, generation), TRAE_CONFIG.oauthTimeoutMs);
       resolve({ success: true, port: traeProxyPort, callbackUrl: `http://127.0.0.1:${traeProxyPort}${TRAE_CONFIG.callbackPath}` });
     });
-    server.on("error", (err) => resolve({ success: false, reason: err.message }));
+    server.on("error", () => {
+      if (traeProxyServer === server) traeProxyServer = null;
+      resolve({ success: false, reason: "proxy_start_failed" });
+    });
   });
 }
 
-export function stopTraeProxy() {
+export function stopTraeProxy(_owner, expectedGeneration = traeProxyGeneration) {
+  if (expectedGeneration !== traeProxyGeneration) return false;
   if (traeProxyTimeout) { clearTimeout(traeProxyTimeout); traeProxyTimeout = null; }
   if (traeProxyServer) { traeProxyServer.close(); traeProxyServer = null; }
   traeProxyPort = null;
+  if (traeSession?._proxyGeneration === expectedGeneration
+      && (traeSession.status === "pending" || traeSession.status === "exchanging")) traeSession = null;
+  return true;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -546,11 +644,13 @@ export function stopTraeProxy() {
 let windsurfProxyServer = null;
 let windsurfProxyTimeout = null;
 let windsurfProxyPort = null;
+let windsurfProxyGeneration = 0;
 let windsurfSession = null;
 
 export function registerWindsurfSession({ state }) {
   if (!state) return false;
-  windsurfSession = { state, status: "pending", createdAt: Date.now() };
+  if (!windsurfProxyServer) return false;
+  windsurfSession = { state, _proxyGeneration: windsurfProxyGeneration, status: "pending", createdAt: Date.now() };
   return true;
 }
 export function getWindsurfSessionStatus(state) {
@@ -568,6 +668,7 @@ export function startWindsurfProxy() {
       resolve({ success: true, port: windsurfProxyPort, callbackUrl: `http://127.0.0.1:${windsurfProxyPort}${WINDSURF_CONFIG.callbackPath}` });
       return;
     }
+    const generation = ++windsurfProxyGeneration;
     const server = http.createServer(async (req, res) => {
       const url = new URL(req.url, "http://localhost");
       if (url.pathname !== WINDSURF_CONFIG.callbackPath) {
@@ -576,7 +677,7 @@ export function startWindsurfProxy() {
         return;
       }
       const session = windsurfSession;
-      if (!session) {
+      if (!session || session._proxyGeneration !== generation || windsurfProxyServer !== server) {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(renderCodexResultPage(false, "No active Windsurf login session"));
         return;
@@ -589,24 +690,31 @@ export function startWindsurfProxy() {
       }
       const cbState = url.searchParams.get("state");
       if (!cbState || !session.state || cbState !== session.state) {
-        session.status = "error";
-        session.error = "Windsurf callback state mismatch";
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(renderCodexResultPage(false, session.error));
-        stopWindsurfProxy();
+        res.writeHead(409, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderCodexResultPage(false, "Windsurf callback state mismatch"));
         return;
       }
+      if (session.status !== "pending") {
+        res.writeHead(409);
+        res.end("OAuth session is no longer active");
+        return;
+      }
+      session.status = "exchanging";
       const rawCallback = `${url.pathname}?${url.searchParams.toString()}`;
       try {
         const { exchangeTokens } = await import("../providers.js");
         const { createProviderConnection } = await import("@/models");
         const tokenData = await exchangeTokens("windsurf", rawCallback, null, null, session.state);
+        const shouldCommit = () => windsurfSession === session && session.status === "exchanging"
+          && windsurfProxyServer === server && windsurfProxyGeneration === generation;
+        if (!shouldCommit()) throw new Error("OAuth session is no longer active");
         const connection = await createProviderConnection({
           provider: "windsurf",
           authType: "api_key",
           ...tokenData,
           testStatus: "active",
-        });
+        }, { shouldCommit });
+        if (!connection || !shouldCommit()) throw new Error("OAuth session is no longer active");
         session.status = "done";
         session.connectionId = connection.id;
         session.email = connection.email;
@@ -614,27 +722,39 @@ export function startWindsurfProxy() {
         res.end(renderCodexResultPage(true, "You can close this window."));
       } catch (err) {
         session.status = "error";
-        session.error = err.message;
+        session.error = "OAuth authentication failed";
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(renderCodexResultPage(false, err.message));
+        res.end(renderCodexResultPage(false, "OAuth authentication failed"));
       } finally {
-        stopWindsurfProxy();
+        stopWindsurfProxy(undefined, generation);
       }
     });
+    windsurfProxyServer = server;
     server.listen(0, "127.0.0.1", () => {
-      windsurfProxyServer = server;
+      if (windsurfProxyServer !== server || windsurfProxyGeneration !== generation) {
+        server.close();
+        resolve({ success: false, reason: "cancelled" });
+        return;
+      }
       windsurfProxyPort = server.address().port;
-      windsurfProxyTimeout = setTimeout(() => stopWindsurfProxy(), WINDSURF_CONFIG.oauthTimeoutMs);
+      windsurfProxyTimeout = setTimeout(() => stopWindsurfProxy(undefined, generation), WINDSURF_CONFIG.oauthTimeoutMs);
       resolve({ success: true, port: windsurfProxyPort, callbackUrl: `http://127.0.0.1:${windsurfProxyPort}${WINDSURF_CONFIG.callbackPath}` });
     });
-    server.on("error", (err) => resolve({ success: false, reason: err.message }));
+    server.on("error", () => {
+      if (windsurfProxyServer === server) windsurfProxyServer = null;
+      resolve({ success: false, reason: "proxy_start_failed" });
+    });
   });
 }
 
-export function stopWindsurfProxy() {
+export function stopWindsurfProxy(_owner, expectedGeneration = windsurfProxyGeneration) {
+  if (expectedGeneration !== windsurfProxyGeneration) return false;
   if (windsurfProxyTimeout) { clearTimeout(windsurfProxyTimeout); windsurfProxyTimeout = null; }
   if (windsurfProxyServer) { windsurfProxyServer.close(); windsurfProxyServer = null; }
   windsurfProxyPort = null;
+  if (windsurfSession?._proxyGeneration === expectedGeneration
+      && (windsurfSession.status === "pending" || windsurfSession.status === "exchanging")) windsurfSession = null;
+  return true;
 }
 
 // ───────────────────────────────────────────────────────────────────────────

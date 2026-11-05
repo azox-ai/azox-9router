@@ -7,7 +7,7 @@
     "sha": "1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d"
   },
   "fork_baseline": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
-  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 combo import/export carry plus AZO-945 Portal access-token-only credential sync plus AZO-969 self-hosted Inter, compressed production webpack cache, native production webpack hashing and bounded tracing reads. AZO-950 completed offline qualification of PR17; its full suite remains red against the documented upstream baseline. AZO-998 aligns both package versions with the proposed v0.5.112-azox.1 tag; no tag is created. AZO-1001 pins the official Node base image digest, commits the qualified root lock and locks the Docker recipe; local candidate qualification is recorded under azo_1001_checkpoint. AZO-999 reconciles the qualified candidate with the pinned fork baseline, carrying narrow telemetry, OAuth transport, error-body bounds and standalone/SQL.js integrity seams. No image was built or run. Integration qualification is recorded in azo_999_checkpoint; it does not authorize merge into master or release.",
+  "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 historical combo import/export carry (retired by A12 in AZO-1214) plus AZO-945 Portal access-token-only credential sync plus AZO-969 self-hosted Inter, compressed production webpack cache, native production webpack hashing and bounded tracing reads. AZO-950 completed offline qualification of PR17; its full suite remains red against the documented upstream baseline. AZO-998 aligns both package versions with the proposed v0.5.112-azox.1 tag; no tag is created. AZO-1001 pins the official Node base image digest, commits the qualified root lock and locks the Docker recipe; local candidate qualification is recorded under azo_1001_checkpoint. AZO-999 reconciles the qualified candidate with the pinned fork baseline, carrying narrow telemetry, OAuth transport, error-body bounds and standalone/SQL.js integrity seams. No image was built or run. Integration qualification is recorded in azo_999_checkpoint; it does not authorize merge into master or release.",
   "azo_1073_checkpoint": {
     "task": "AZO-1073",
     "qualified_candidate": "b42ab96096c495c53cdd29a399804c73b422955b",
@@ -167,28 +167,6 @@
       "tests": ["tests/unit/azox-prefill-cache.test.js", "tests/unit/claude-cache-final-tool-results.test.js", "tests/unit/claude-cache-budget-single-object.test.js"],
       "evidence": "AZO-917 focused offline tests and full-suite comparison against AZO-916."
     },
-    "combo_import_export": {
-      "classification": "carry",
-      "decision": "AZO-938 option 1: carry the fork-baseline combo transfer with source runtime semantics; no new whitelist or version rejection without a contract.",
-      "purpose": "Authenticated dashboard export/import of combo definitions plus per-combo routing settings, including Smart metadata, without exporting global settings or secrets.",
-      "acceptance": [
-        "Baseline limits remain: 500 items, 200 models per combo, 2 MiB body, combo name pattern, collision skip/overwrite and an atomic SQLite import transaction.",
-        "Smart smartPolicy, sessionSticky, confidenceThreshold and routerModel round-trip with runtime semantics; inactive judgeModel, routerModel and fusionTuning are retained.",
-        "Unknown strategy settings fields, unknown smartPolicy strings, envelope format and version are not rejected; malformed item types are reported per item.",
-        "Absent saved strategy stays absent; unknown saved fallbackStrategy exports as fallback.",
-        "Rotation resets only on changed imports; storage errors roll back definitions and settings and return a generic message."
-      ],
-      "primary_paths": [
-        "src/app/api/import-export/combos/route.js",
-        "src/lib/db/repos/combosRepo.js",
-        "open-sse/utils/requestBody.js",
-        "src/app/(dashboard)/dashboard/import-export/page.js"
-      ],
-      "tests": ["tests/unit/combo-import-export.test.js", "tests/unit/combo-import-integration.test.js", "tests/unit/combo-import-storage.test.js", "tests/unit/dashboard-guard.test.js"],
-      "overlay_differences": "Error logs omit the raw error object and non-body import errors return a generic message (log hardening versus the fork baseline).",
-      "evidence": "AZO-936 offline sandbox: RED 9 failing before the overlay fix, focused 72/72 passing, full suite 4337/4193/45 with no new failures versus the PR #10 source run (4291/4147/45).",
-      "deployed": false
-    },
     "portal_credential_sync": {
       "classification": "carry",
       "decision": "AZO-945: carry the fork-baseline Portal credential sync as an access-token-only contract; Portal is the sole refresh-token owner.",
@@ -261,7 +239,7 @@
     "release_status": "Draft only; no master merge, tag, image, deploy or Result acceptance. AZO-1167 PR-link boundary remains blocked."
   },
   "azo_1214_reconciliation": {
-    "classification": "carry master combo diagnostics/cancellation and recover dropped regression coverage; auth remedy blocked, not waived",
+    "classification": "carry master combo diagnostics/cancellation and recover normal-login regressions under A12/A14; retire Contributor and combo import/export under A12",
     "candidate_parent": "74554f9e1036d6856535d604cfba20278084b384",
     "master_reference": "365252e4da550c0c1643d3016e223e48c90512e3",
     "supersedes": "The combo/fusion statements in azo_999_checkpoint.retained_dependency_closure.reduction and azo_1210_reconciliation.known_review_limits describe historical candidates, not this restoration.",
@@ -276,7 +254,7 @@
     },
     "dropped_test_inventory": [
       {"file": "tests/unit/combo-retry-after.test.js", "disposition": "restore", "reason": "Master retry deadline behavior plus __test__.parseRetryDeadline export; numeric delay is distinct from reset epoch."},
-      {"file": "tests/unit/custom-navigation.test.js", "disposition": "equivalent", "reason": "Adapt master navigation checks to upstream Sidebar/Header architecture, preserving AZOX links and retired Contributor absence."},
+      {"file": "tests/unit/custom-navigation.test.js", "disposition": "equivalent", "reason": "Adapt master navigation checks to upstream Sidebar/Header architecture, preserving combo runtime navigation and asserting retired Contributor/import-export absence under A12."},
       {"file": "tests/unit/chat-account-mutation-order.test.js", "disposition": "restore", "reason": "Master request-scoped mutation ordering and cancellation contracts."},
       {"file": "tests/translator/assistant-prefill-policy.test.js", "disposition": "restore", "reason": "Master prefill coverage, unchanged behavior assertions; A3 is limited to its three approved divergences, not a waiver for other failures."},
       {"file": "tests/unit/account-fallback-prefill.test.js", "disposition": "restore", "reason": "Master prefill/abort no-cooldown assertions restored. Master stop-on-other-400 case conflicts with preserved upstream request-scoped fallback, so it asserts that contract instead: next member tried, first rejection returned intact, account never cooled. No expanded A3 waiver."},
@@ -288,20 +266,52 @@
       {"file": "tests/unit/contributor-session-origin.test.js", "disposition": "retire", "reason": "AZO-927: removed Contributor session/origin boundary."},
       {"file": "tests/unit/contributor-store.test.js", "disposition": "retire", "reason": "AZO-927: removed Contributor storage API."},
       {"file": "tests/unit/contributor-gitlab-oauth-ssrf.test.js", "disposition": "retire", "reason": "AZO-927: sole case mocks Contributor session/store and its authorization boundary; normal GitLab client-secret validation remains in oauth-register-session."},
-      {"file": "tests/unit/contributor-proxy-atomic.test.js", "disposition": "mixed", "reason": "AZO-927 retires Contributor reservation hooks only. Four unchanged normal-login cases preserved in tests/unit/oauth-proxy-normal.test.js: public errors, wrong-state Trae/Windsurf callbacks and delayed persistence guard. All four fail on current auth source; not skipped."},
-      {"file": "tests/unit/oauth-register-session.test.js", "disposition": "mixed", "reason": "AZO-927 retires six Contributor cases only; retain 18 normal OAuth assertions, of which 11 fail and seven pass in run239 focused receipt. No skips or relaxed expectations."}
+      {"file": "tests/unit/contributor-proxy-atomic.test.js", "disposition": "mixed", "reason": "AZO-927 retires Contributor reservation hooks only. Four unchanged normal-login cases preserved in tests/unit/oauth-proxy-normal.test.js: public errors, wrong-state Trae/Windsurf callbacks and delayed persistence guard. All four failed before the A12 normal-login remedy (historical run239); assertions remain active, not skipped."},
+      {"file": "tests/unit/oauth-register-session.test.js", "disposition": "mixed", "reason": "AZO-927 retires six Contributor cases only; retain 18 normal OAuth assertions, of which 11 failed and seven passed in the historical run239 focused receipt before the A12 remedy. No skips or relaxed expectations."}
     ],
-    "auth_boundary": "AZO-1216 (Plan 2 Confirmation 27) requests only normal OAuth hardening in src/app/api/oauth/[provider]/[action]/route.js and src/lib/oauth/utils/server.js. Current source grant excludes auth; these production files remain unchanged. Preserve MiniMax lease actions. Fifteen restored normal OAuth failures are blockers, not baseline green or authority to alter auth.",
+    "auth_boundary": "A12-904-OAUTH-RESTORE (AZO-1216) authorizes the normal-login route/server remedy with bounded POST input, safe errors, state/session checks and persistence cancellation; MiniMax lease actions stay intact. A14 AZO-904-A14-OAUTH-SEAMS (AZO-1237, principal comment 01a1a9d9-7662-7000-a141-fc5d15f40530) additionally authorizes only createProviderConnection shouldCommit checks before/inside its transaction and Codex/xAI modal POST JSON start-proxy plus clientSecret/client_secret URL filtering. Portal identity/version guards and MiniMax/nous flows remain unchanged. RED a14-red: 9 behavioral failures out of 12 tests (3 cancellation, 4 transport/secret, 2 retirement navigation); no harness errors. Fresh GREEN/full-suite/build and exact-revision review are still required; no real OAuth login or live data is qualified.",
     "snapshot": "Remove exactly the obsolete GOLDEN response stream: OpenAI-Responses (codex) → OpenAI > error event → error chunk (fallback id/created) 1 key. Master 365252e4 renamed that case to typed error details; its replacement snapshot already exists. No bulk snapshot update.",
     "sqljs_build_diagnosis": "Run239 symlink topology resolves source and standalone sql-wasm.wasm to the same device/inode; cpSync fails ERR_FS_CP_EINVAL because src and dest are the same file. Next copied the harness node_modules symlink. Docker uses a physical npm ci. This establishes a harness artifact for that run, not proof of physical packaging success; physical-topology final build remains required, including notices/assets.",
-    "limits": "Offline source-only checks, dummy fixtures, no new dependencies or network. Exact-commit qualification, full failure deltas and self-review (independent_review:false) must be reported honestly. Draft PR19 only; no merge, release/image/deploy, live OAuth/data or Result acceptance; AZO-1167 boundary unchanged."
+    "limits": "Source qualification remains offline, dummy-only, with no new dependencies. A14-E2E authorizes Manager continuation through PR19 review/merge/release/build and zbs0 llm-gateway 9Router deployment only under the effective C1/rollout/A12 gates. This inventory is not execution proof or a waiver: exact revision, image provenance, Compose/mount/health, backup/rollback rehearsal, downtime/observation and direct/LiteLLM smoke gates remain mandatory. No deploy, live OAuth/data or Result acceptance is claimed here."
   },
   "retired_customizations": {
+    "combo_import_export": {
+      "classification": "retire",
+      "decision": "A12-904-RETIRE-CONTRIBUTOR-EXPORT-IMPORT: authenticated principal retires Contributor and combo export/import; supersedes historical AZO-938 carry.",
+      "removed": [
+        "dashboard import-export page",
+        "/api/import-export/combos",
+        "Sidebar link and Header metadata",
+        "importComboItems and its DB re-export"
+      ],
+      "preserved": "Ordinary combo/fusion routing, strategy configuration and CRUD remain. General DB backup/importDb and Portal restore protection remain unchanged.",
+      "test_retirement": [
+        {
+          "file": "tests/unit/combo-import-export.test.js",
+          "reason": "Retired endpoint validation/export and import response contract; no endpoint remains."
+        },
+        {
+          "file": "tests/unit/combo-import-integration.test.js",
+          "reason": "Retired transfer request/strategy round-trip; runtime combo routing remains covered by combo suites."
+        },
+        {
+          "file": "tests/unit/combo-import-storage.test.js",
+          "reason": "Retired importComboItems atomic transfer; ordinary combo CRUD and Portal/general DB restore tests remain."
+        }
+      ],
+      "tests": [
+        "tests/unit/custom-navigation.test.js",
+        "tests/unit/azox-contributor-retirement.node-test.js",
+        "tests/unit/dashboard-guard.test.js"
+      ],
+      "deployed": false,
+      "limits": "Source retirement only; no claim about currently deployed service. Historical AZO-936 evidence remains in Git history, not current support."
+    },
     "contributor": {
       "classification": "retire",
       "decision": "AZO-927: requester removed AZOX Contributor onboarding from the v0.5.111 target.",
       "reason": "The unfinished AZO-919 partial implementation was not accepted; keeping its public session exchange, admin invite route, dashboard guard exception or OAuth connection override would reintroduce an unauthorized feature.",
-      "candidate": "No AZOX Contributor overlay is carried from f08475cc0c6b9b81e0e54a0df9cf2eff7d3b8ab3; upstream direct-login OAuth remains unchanged. connectionsRepo.js and dashboardGuard.js differ from upstream only for portal_credential_sync (Portal identity guards and the dedicated /api/internal/portal/ bearer gate); neither carries a Contributor reservation commit hook or guard exception.",
+      "candidate": "No AZOX Contributor overlay is carried from f08475cc0c6b9b81e0e54a0df9cf2eff7d3b8ab3. A12 reconfirms retirement. Normal direct-login OAuth hardening under A12/A14 and ordinary shouldCommit cancellation are not Contributor hooks. Portal identity/version guards and its dedicated bearer gate remain; no Contributor reservation commit hook or public guard exception is restored.",
       "deployed": false,
       "limitations": "Source-only retirement on this review branch. No claim about the currently deployed service. OpenCode/Muse model names containing contributor are upstream model IDs, not AZOX Contributor onboarding."
     }

@@ -374,7 +374,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       const authorizeUrl = new URL(`/api/oauth/${provider}/authorize`, window.location.origin);
       authorizeUrl.searchParams.set("redirect_uri", redirectUri);
       if (oauthMeta) {
-        Object.entries(oauthMeta).forEach(([k, v]) => { if (v) authorizeUrl.searchParams.set(k, v); });
+        Object.entries(oauthMeta).forEach(([k, v]) => {
+          if (v && k !== "clientSecret" && k !== "client_secret") authorizeUrl.searchParams.set(k, v);
+        });
       }
       const res = await fetch(authorizeUrl.toString());
       const data = await res.json();
@@ -385,12 +387,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       let codexServerSide = false;
       if (provider === "codex") {
         try {
-          const proxyUrl = new URL(`/api/oauth/codex/start-proxy`, window.location.origin);
-          proxyUrl.searchParams.set("app_port", appPort);
-          proxyUrl.searchParams.set("state", data.state);
-          proxyUrl.searchParams.set("code_verifier", data.codeVerifier);
-          proxyUrl.searchParams.set("redirect_uri", redirectUri);
-          const proxyRes = await fetch(proxyUrl.toString());
+          const proxyRes = await fetch(`/api/oauth/codex/start-proxy`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ appPort, state: data.state, codeVerifier: data.codeVerifier, redirectUri }),
+          });
           const proxyData = await proxyRes.json();
           codexProxyActive = proxyData.success;
           codexServerSide = !!proxyData.serverSide;
@@ -404,12 +405,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       let xaiServerSide = false;
       if (provider === "xai") {
         try {
-          const proxyUrl = new URL(`/api/oauth/xai/start-proxy`, window.location.origin);
-          proxyUrl.searchParams.set("app_port", appPort);
-          proxyUrl.searchParams.set("state", data.state);
-          proxyUrl.searchParams.set("code_verifier", data.codeVerifier);
-          proxyUrl.searchParams.set("redirect_uri", redirectUri);
-          const proxyRes = await fetch(proxyUrl.toString());
+          const proxyRes = await fetch(`/api/oauth/xai/start-proxy`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ appPort, state: data.state, codeVerifier: data.codeVerifier, redirectUri }),
+          });
           const proxyData = await proxyRes.json();
           xaiProxyActive = proxyData.success;
           xaiServerSide = !!proxyData.serverSide;
