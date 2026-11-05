@@ -29,7 +29,6 @@ const PUBLIC_API_PATHS = [
   "/api/auth/logout",
   "/api/auth/status",
   "/api/auth/oidc",
-  "/api/contribute",
   "/api/auth/saml",
   "/api/version",
   "/api/settings/require-login",
@@ -48,6 +47,8 @@ const ALWAYS_PROTECTED = [
   "/api/oauth/cursor/auto-import",
   "/api/oauth/kiro/auto-import",
   "/api/oauth/zed/auto-import",
+  "/api/oauth/minimax-code/lease",
+  "/api/oauth/minimax-code-global/lease",
 ];
 
 // Require auth, but allow through if requireLogin is disabled
@@ -85,6 +86,8 @@ const LOCAL_ONLY_PATHS = [
   "/api/oauth/cursor/auto-import",
   "/api/oauth/kiro/auto-import",
   "/api/oauth/zed/auto-import",
+  "/api/oauth/minimax-code/lease",
+  "/api/oauth/minimax-code-global/lease",
   "/api/auth/reset-password",
   "/api/headroom/start",
   "/api/headroom/stop",
@@ -201,7 +204,6 @@ export { isAuthenticated };
 export const __test__ = {
   isLocalRequest,
   isPublicLlmApi,
-  isPublicApi,
   extractApiKey,
   canAccessPublicLlmApi,
   canAccessLocalOnlyRoute,
@@ -210,6 +212,9 @@ export const __test__ = {
 export async function proxy(request) {
   const { pathname } = request.nextUrl;
 
+  // Portal credential sync is a machine-to-machine route. It accepts only the
+  // dedicated PORTAL_SYNC_TOKEN bearer (fails closed when unset) and never a
+  // dashboard session, API key or trusted-peer header.
   if (pathname.startsWith("/api/internal/portal/")) {
     if (hasValidPortalSyncToken(request)) return NextResponse.next();
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

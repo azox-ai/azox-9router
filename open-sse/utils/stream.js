@@ -3,7 +3,9 @@ import { FORMATS } from "../translator/formats.js";
 import { PROVIDERS } from "../config/providers.js";
 import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
 import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
-import { hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
+import { liftReasoningAliases } from "../translator/concerns/reasoning.js";
+import { restoreToolNames } from "./opencodeFingerprint.js";
+import { hasValuableContent, fixInvalidId, formatSSE, ensureStreamToolCallIds } from "./streamHelpers.js";
 import { createSSEFrameParser, parseSSEFrame } from "./sseFrameParser.js";
 import { createStreamTerminalState } from "./streamTerminalState.js";
 import { dbg } from "./debugLog.js";
@@ -39,6 +41,8 @@ export function createSSEStream(options = {}) {
     customToolNames: new Set(customToolNames || []), model,
     sessionId: credentials?._clientSessionId || null, targetFormat: providerFormat
   } : null;
+  const seenToolCallIds = new Map();
+  const liftAliases = !translated && !!PROVIDERS[provider]?.quirks?.reasoningAliasFields;
   let usage = null;
   let accumulatedContent = "";
   let accumulatedThinking = "";
@@ -84,6 +88,9 @@ export function createSSEStream(options = {}) {
     onStreamComplete?.({ content: accumulatedContent, thinking: accumulatedThinking }, finalUsage, ttftAt, terminalState.outcome);
   }
   function fail(controller, message = "Upstream stream closed before a terminal event") {
+    if (translated && providerFormat === FORMATS.OPENAI && clientFormat === FORMATS.CLAUDE && !state.finishReason) {
+      throw Object.assign(new Error("incomplete upstream stream (missing finish_reason)"), { code: "INCOMPLETE_STREAM" });
+    }
     pendingClaudeTerminal = [];
     if (!tracksTerminal) {
       // No client-parseable error frame exists for this protocol; record the
@@ -105,7 +112,8 @@ export function createSSEStream(options = {}) {
   function accumulate(input) {
     if (!input || typeof input !== "object") return;
     const content = input.choices?.[0]?.delta?.content || input.delta?.text;
-    const thinking = input.choices?.[0]?.delta?.reasoning_content || input.delta?.thinking;
+    const delta = input.choices?.[0]?.delta;
+    const thinking = (liftAliases && delta ? liftReasoningAliases(delta).reasoning_content : delta?.reasoning_content) || input.delta?.thinking;
     if (typeof content === "string") accumulatedContent += content;
     if (typeof thinking === "string") accumulatedThinking += thinking;
     if (input.candidates?.[0]?.content?.parts) {
@@ -120,7 +128,7 @@ export function createSSEStream(options = {}) {
   function observeOutput(item) {
     terminalState.observe(item?.data || item, item?.event, clientFormat);
   }
-  const waitsForUsageTrailer = () => providerFormat === FORMATS.OPENAI && clientFormat === FORMATS.OPENAI;
+  const waitsForUsageTrailer = () => providerFormat === FORMATS.OPENAI && [FORMATS.OPENAI, FORMATS.CLAUDE].includes(clientFormat);
   function outputItem(item, controller, fromClaudeDelta = false) {
     if (item == null) return;
     // The first translator hop can mark a provider failure even when the second
@@ -156,6 +164,10 @@ export function createSSEStream(options = {}) {
     }
   }
   function emitTranslation(input, controller, fromClaudeDelta = false) {
+    // EOF/[DONE] cannot release buffered tool arguments without semantic finish.
+    if (input === null && providerFormat === FORMATS.OPENAI && clientFormat === FORMATS.CLAUDE && !state.finishReason) {
+      throw Object.assign(new Error("incomplete upstream stream (missing finish_reason)"), { code: "INCOMPLETE_STREAM" });
+    }
     const result = translateResponse(providerFormat, clientFormat, input, state);
     if (result?._openaiIntermediate) {
       for (const item of result._openaiIntermediate) reqLogger?.appendOpenAIChunk?.(formatSSE(item, FORMATS.OPENAI));
@@ -173,6 +185,18 @@ export function createSSEStream(options = {}) {
     let changed = false;
     if (!isResponse && input && typeof input === "object" && input.choices) {
       changed = fixInvalidId(input);
+      changed = ensureStreamToolCallIds(input, seenToolCallIds) || changed;
+      if (toolNameMap?.size) {
+        const restored = restoreToolNames(input, toolNameMap);
+        if (restored !== input) { input = restored; changed = true; }
+      }
+      if (liftAliases) {
+        for (const choice of input.choices) {
+          if (!choice?.delta) continue;
+          const lifted = liftReasoningAliases(choice.delta);
+          if (lifted !== choice.delta) { choice.delta = lifted; changed = true; }
+        }
+      }
       if (!input.object) { input.object = "chat.completion.chunk"; changed = true; }
       if (!input.created) { input.created = Math.floor(Date.now() / 1000); changed = true; }
       if (input.prompt_filter_results !== undefined) { delete input.prompt_filter_results; changed = true; }
@@ -228,7 +252,7 @@ export function createSSEStream(options = {}) {
         }
         let raw = frame.raw;
         if (!/\r?\n\r?\n$/.test(raw)) raw = raw.replace(/\r?\n?$/, "\n\n");
-        enqueue(controller, translated ? formatSSE(trailer, clientFormat) : raw);
+        if (clientFormat === FORMATS.OPENAI) enqueue(controller, translated ? formatSSE(trailer, clientFormat) : raw);
       }
       return;
     }
@@ -303,7 +327,10 @@ export function createSSEStream(options = {}) {
     for (const frame of frames) {
       if (terminalState.terminal && !waitsForUsageTrailer()) break;
       try { handleFrame(frame, controller); }
-      catch { fail(controller, "Invalid upstream SSE frame"); break; }
+      catch (error) {
+        if (error?.code === "INCOMPLETE_STREAM") throw error;
+        fail(controller, "Invalid upstream SSE frame"); break;
+      }
     }
   }
 
@@ -313,7 +340,10 @@ export function createSSEStream(options = {}) {
       reqLogger?.appendProviderChunk?.(chunk);
       if (terminalState.terminal && !waitsForUsageTrailer()) return;
       try { process(parser.push(chunk), controller); }
-      catch { fail(controller, "Invalid or oversized upstream SSE frame"); }
+      catch (error) {
+        if (error?.code === "INCOMPLETE_STREAM") throw error;
+        fail(controller, "Invalid or oversized upstream SSE frame");
+      }
     },
     flush(controller) {
       try {
@@ -324,7 +354,13 @@ export function createSSEStream(options = {}) {
         if (!terminalState.terminal && !tracksTerminal) { terminalState.finish("completed"); done(controller); }
         if (!terminalState.terminal) fail(controller);
         else if (!terminalState.doneSent && clientFormat !== FORMATS.CLAUDE) done(controller);
-      } catch { fail(controller, "Invalid upstream SSE termination"); }
+      } catch (error) {
+        if (error?.code === "INCOMPLETE_STREAM") {
+          if (completionFlushTimer) { clearTimeout(completionFlushTimer); completionFlushTimer = null; }
+          throw error;
+        }
+        fail(controller, "Invalid upstream SSE termination");
+      }
       dbg("SSE", `flush | provider=${provider} | model=${model} | emitted=${emitted} | outcome=${terminalState.outcome}`);
       finalize();
     }
@@ -345,6 +381,11 @@ export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, p
   return createSSEStream({ mode: TRANSLATE, targetFormat, sourceFormat, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, customToolNames, credentials, ...(terminalState ? { terminalState } : {}) });
 }
 
-export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, format = null, terminalState = null) {
-  return createSSEStream({ mode: "passthrough", provider, reqLogger, model, connectionId, body, onStreamComplete, apiKey, targetFormat: format || PROVIDERS[provider]?.format || FORMATS.OPENAI, sourceFormat: format || PROVIDERS[provider]?.format || FORMATS.OPENAI, ...(terminalState ? { terminalState } : {}) });
+export function createPassthroughStreamWithLogger(provider = null, reqLogger = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, toolNameMap = null, format = null, terminalState = null) {
+  if (typeof toolNameMap === "string") {
+    terminalState = format;
+    format = toolNameMap;
+    toolNameMap = null;
+  }
+  return createSSEStream({ mode: "passthrough", provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, targetFormat: format || PROVIDERS[provider]?.format || FORMATS.OPENAI, sourceFormat: format || PROVIDERS[provider]?.format || FORMATS.OPENAI, ...(terminalState ? { terminalState } : {}) });
 }

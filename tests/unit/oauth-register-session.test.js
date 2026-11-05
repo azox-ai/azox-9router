@@ -42,6 +42,8 @@ vi.mock("@/lib/oauth/constants/oauth", () => ({ ZED_HOSTED_CONFIG: { defaultNati
 
 const { GET, POST } = await import("../../src/app/api/oauth/[provider]/[action]/route.js");
 
+// AZO-927: six Contributor reservation/atomic-commit cases retired.
+// Normal OAuth transport, validation, one-shot claims and safe errors retained.
 describe("OAuth proxy session registration", () => {
   it("returns a client error when authorize metadata validation rejects the request", async () => {
     const validationError = Object.assign(new Error("GitLab base URL must use HTTP or HTTPS"), {
@@ -86,103 +88,9 @@ describe("OAuth proxy session registration", () => {
     expect(mocks.registerTraeSession).toHaveBeenCalledWith({ state: "state-1" });
   });
 
-  it("attaches the internal contributor commit hook to a proxy session", async () => {
-    const commitProviderConnection = vi.fn();
-    const contributorReservationHash = "reservation-hash-1";
-    const request = new Request("https://router.example/api/oauth/trae/register-session", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ state: "state-contributor" }),
-    });
 
-    const response = await POST(request, {
-      params: Promise.resolve({ provider: "trae", action: "register-session" }),
-    }, { commitProviderConnection, contributorReservationHash });
 
-    expect(response.status).toBe(200);
-    expect(mocks.registerTraeSession).toHaveBeenLastCalledWith({
-      state: "state-contributor",
-      commitProviderConnection,
-      contributorReservationHash,
-    });
-  });
 
-  it("uses the internal atomic commit hook instead of normal OAuth persistence", async () => {
-    const tokenData = { accessToken: "contributor-token", email: "contributor@example.test" };
-    const connection = { id: "atomic-connection", provider: "claude", ...tokenData };
-    mocks.exchangeTokens.mockResolvedValueOnce(tokenData);
-    const commitProviderConnection = vi.fn(async () => connection);
-    const request = new Request("https://router.example/api/oauth/claude/exchange", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        code: "authorization-code",
-        redirectUri: "https://router.example/callback",
-        codeVerifier: "pkce-verifier",
-        state: "state-direct",
-      }),
-    });
-
-    const response = await POST(request, {
-      params: Promise.resolve({ provider: "claude", action: "exchange" }),
-    }, { commitProviderConnection });
-
-    expect(response.status).toBe(200);
-    expect(commitProviderConnection).toHaveBeenCalledWith(expect.objectContaining({
-      provider: "claude",
-      authType: "oauth",
-      accessToken: "contributor-token",
-    }));
-    expect(mocks.createConnection).not.toHaveBeenCalled();
-  });
-
-  it("does not start a contributor Codex proxy without atomic session parameters", async () => {
-    mocks.startCodexProxy.mockClear();
-    const request = new Request("https://router.example/api/oauth/codex/start-proxy", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ appPort: 1455 }),
-    });
-
-    const response = await POST(request, {
-      params: Promise.resolve({ provider: "codex", action: "start-proxy" }),
-    }, {
-      commitProviderConnection: vi.fn(),
-      contributorReservationHash: "reservation-hash-1",
-    });
-
-    expect(response.status).toBe(400);
-    expect(mocks.startCodexProxy).not.toHaveBeenCalled();
-  });
-
-  it("stops a started contributor proxy when server-side registration fails", async () => {
-    mocks.startCodexProxy.mockResolvedValueOnce({ success: true, port: 1455 });
-    mocks.registerCodexSession.mockReturnValueOnce(false);
-    mocks.stopCodexProxy.mockClear();
-    const request = new Request(
-      "https://router.example/api/oauth/codex/start-proxy",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          appPort: 1455,
-          state: "state-1",
-          codeVerifier: "verifier-1",
-          redirectUri: "http://localhost:1455/auth/callback",
-        }),
-      },
-    );
-
-    const response = await POST(request, {
-      params: Promise.resolve({ provider: "codex", action: "start-proxy" }),
-    }, {
-      commitProviderConnection: vi.fn(),
-      contributorReservationHash: "reservation-hash-1",
-    });
-
-    expect(response.status).toBe(409);
-    expect(mocks.stopCodexProxy).toHaveBeenCalledWith("reservation-hash-1");
-  });
 
   it("starts a fixed-port Codex proxy from POST body session parameters", async () => {
     mocks.startCodexProxy.mockResolvedValueOnce({ success: true, port: 1455 });
@@ -302,41 +210,6 @@ describe("OAuth proxy session registration", () => {
     expect(mocks.startCodexProxy).not.toHaveBeenCalled();
   });
 
-  it("starts and registers a fixed proxy from a JSON body", async () => {
-    mocks.startCodexProxy.mockReset().mockResolvedValueOnce({ success: true, port: 1455 });
-    mocks.registerCodexSession.mockReset().mockReturnValueOnce(true);
-    const commitProviderConnection = vi.fn();
-    const request = new Request("https://router.example/api/oauth/codex/start-proxy", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        appPort: 3210,
-        state: "body-state",
-        codeVerifier: "body-verifier",
-        redirectUri: "http://localhost:1455/auth/callback",
-      }),
-    });
-
-    const response = await POST(
-      request,
-      { params: Promise.resolve({ provider: "codex", action: "start-proxy" }) },
-      {
-        commitProviderConnection,
-        contributorReservationHash: "body-reservation",
-      },
-    );
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ success: true, serverSide: true });
-    expect(mocks.startCodexProxy).toHaveBeenCalledWith(3210, "body-reservation");
-    expect(mocks.registerCodexSession).toHaveBeenCalledWith({
-      state: "body-state",
-      codeVerifier: "body-verifier",
-      redirectUri: "http://localhost:1455/auth/callback",
-      commitProviderConnection,
-      contributorReservationHash: "body-reservation",
-    });
-  });
 
   it.each([0, 65536, "not-a-port"])("rejects invalid fixed proxy app port %s", async (appPort) => {
     mocks.startCodexProxy.mockClear();
@@ -436,23 +309,6 @@ describe("OAuth proxy session registration", () => {
     expect(mocks.clearCodexSession).toHaveBeenCalledWith("secret-state");
   });
 
-  it("does not expose or clear a proxy session owned by another contributor reservation", async () => {
-    mocks.getCodexSessionStatus.mockReturnValueOnce({
-      status: "done",
-      connectionId: "connection-other",
-      contributorReservationHash: "other-reservation-hash",
-    });
-    mocks.clearCodexSession.mockClear();
-
-    const response = await GET(
-      new Request("https://router.example/api/oauth/codex/poll-status?state=state-other"),
-      { params: Promise.resolve({ provider: "codex", action: "poll-status" }) },
-      { contributorReservationHash: "request-reservation-hash" },
-    );
-
-    expect(response.status).toBe(409);
-    expect(mocks.clearCodexSession).not.toHaveBeenCalled();
-  });
 
   it("does not return or log raw provider exceptions from an OAuth exchange", async () => {
     const reflectedSecret = "client_secret=exchange-secret authorization_code=secret-code";

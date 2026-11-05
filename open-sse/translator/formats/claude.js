@@ -2,6 +2,7 @@
 import { DEFAULT_THINKING_CLAUDE_SIGNATURE } from "../../config/defaultThinkingSignature.js";
 import { ROLE, CLAUDE_BLOCK } from "../schema/index.js";
 import { adjustMaxTokens } from "./maxTokens.js";
+import { applyAssistantPrefillPolicy } from "../concerns/assistantPrefillPolicy.js";
 import { applyCloaking } from "../../utils/claudeCloaking.js";
 import { resolveSessionId } from "../../utils/sessionManager.js";
 import { isValidClaudeSignature } from "../../utils/claudeSignature.js";
@@ -9,9 +10,6 @@ import { PROVIDERS } from "../../providers/index.js";
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
 import { isDeepSeekModel } from "../../providers/models/helpers.js";
 import { DEFAULT_MAX_TOKENS } from "../../config/runtimeConfig.js";
-import { CLAUDE_SYSTEM_PROMPT } from "../../config/appConstants.js";
-import { applyAssistantPrefillPolicy } from "../concerns/assistantPrefillPolicy.js";
-import { ToolCompatibilityError } from "../concerns/hostedToolPolicy.js";
 
 const CACHE_CONTROL_5M = { type: "ephemeral" };
 const CACHE_CONTROL_1H = { type: "ephemeral", ttl: "1h" };
@@ -54,11 +52,7 @@ export function hasValidContent(msg) {
     return isContentfulBlock(msg.content);
   }
   if (Array.isArray(msg.content)) {
-    return msg.content.some(block =>
-      isContentfulBlock(block) ||
-      block?.type === CLAUDE_BLOCK.THINKING ||
-      block?.type === CLAUDE_BLOCK.REDACTED_THINKING
-    );
+    return msg.content.some(isContentfulBlock);
   }
   return false;
 }
@@ -176,8 +170,14 @@ export function fixToolUseOrdering(messages) {
   return merged;
 }
 
-// Models that reject thinking.type "adaptive" + output_config.effort (Opus 4.5+/Sonnet 4.6+ only)
-const ADAPTIVE_THINKING_UNSUPPORTED = /haiku/i;
+// Haiku 3.x/4.x reject thinking.type "adaptive" + output_config.effort; Haiku 5+ accepts
+// ONLY adaptive (#5183). Version may follow "haiku" (haiku-4-5, haiku-4.5) or precede it
+// (claude-4.5-haiku, claude-3-5-haiku). Unversioned "haiku" keeps the old, safe downgrade.
+function isAdaptiveThinkingUnsupported(model = "") {
+  if (!/haiku/i.test(model)) return false;
+  const m = String(model).match(/haiku[-._]?(\d+)|(?<![\d.])(\d+)(?:[-._]\d+)?[-._]?haiku/i);
+  return m ? Number(m[1] || m[2]) < 5 : true;
+}
 
 function handlesThinkingBlocks(provider) {
   return provider === "claude" || provider?.startsWith("anthropic-compatible") || provider === "deepseek";
@@ -219,17 +219,16 @@ function hasForeignServerToolUseId(block) {
 // 3. bare content-block objects (content: {block} instead of [{block}]) → wrapped first
 // 4. role "system" messages (mid-conversation-system beta) → only top-level system is allowed
 // 5. server_tool_use blocks carrying a foreign (non-srvtoolu_) id → rejected outright
-// rawHeaders carries the AZOX assistant-prefill opt-in header into the policy below.
 export function normalizeClaudePassthrough(body, model = "", rawHeaders = null) {
   if (!body || typeof body !== "object") return body;
 
   // 1. Downgrade adaptive thinking for models that don't support it
-  if (body.thinking?.type === "adaptive" && ADAPTIVE_THINKING_UNSUPPORTED.test(model)) {
+  if (body.thinking?.type === "adaptive" && isAdaptiveThinkingUnsupported(model)) {
     body.thinking = { type: "enabled", budget_tokens: 10000 };
   }
 
   // 2. Strip effort param for models that don't support it (keep other output_config fields)
-  if (ADAPTIVE_THINKING_UNSUPPORTED.test(model) && body.output_config?.effort != null) {
+  if (isAdaptiveThinkingUnsupported(model) && body.output_config?.effort != null) {
     delete body.output_config.effort;
     if (Object.keys(body.output_config).length === 0) delete body.output_config;
   }
@@ -329,20 +328,22 @@ export function normalizeClaudePassthrough(body, model = "", rawHeaders = null) 
   // Anthropic rejects `messages.N.content` blocks with empty text (400
   // "text content blocks must be non-empty"); a message whose blocks were all
   // stripped above must be dropped, not padded with an empty placeholder.
+  // The same applies to thinking blocks: Anthropic rejects a block with no visible
+  // text (400 "each thinking block must contain non-whitespace thinking"), and such
+  // a block rides along in the client's replayed history on every later turn.
   if (Array.isArray(body.messages)) {
     body.messages = body.messages.filter(msg => {
       if (typeof msg.content === "string") return msg.content.trim().length > 0;
       if (!Array.isArray(msg.content)) return true;
       msg.content = msg.content.filter(block =>
-        !(block?.type === CLAUDE_BLOCK.TEXT && !String(block.text ?? "").trim()));
+        !(block?.type === CLAUDE_BLOCK.TEXT && !String(block.text ?? "").trim())
+        && !(block?.type === CLAUDE_BLOCK.THINKING && !String(block.thinking ?? "").trim()));
       return msg.content.length > 0;
     });
     body.messages = ensureTrailingUserTurn(body.messages, originalLastRole);
   }
 
-  applyAssistantPrefillPolicy(body, rawHeaders);
-
-  return body;
+  return applyAssistantPrefillPolicy(body, rawHeaders);
 }
 
 // Newer Claude models reject a body that ends on an assistant turn ("does not
@@ -394,8 +395,19 @@ function markFinalToolResults(body) {
 // (normalize, tool dedupe, token savers) — otherwise the anchor drifts off the tail.
 export function anchorClaudeCache(body) {
   if (!body || typeof body !== "object") return body;
+  if (body.system && typeof body.system === "object" && !Array.isArray(body.system)) {
+    body.system = [body.system];
+  }
   if (Array.isArray(body.messages)) {
-    for (const msg of body.messages) normalizeMessageContent(msg);
+    for (const msg of body.messages) {
+      normalizeMessageContent(msg);
+      if (!Array.isArray(msg.content)) continue;
+      for (const block of msg.content) {
+        if (block?.type === CLAUDE_BLOCK.THINKING || block?.type === CLAUDE_BLOCK.REDACTED_THINKING) {
+          delete block.cache_control;
+        }
+      }
+    }
   }
   // Invalid markers first, whatever the budget: Anthropic rejects a tool that
   // carries BOTH defer_loading and cache_control (#3567). The re-anchor path
@@ -493,25 +505,19 @@ export function hoistToolResultImages(body) {
 }
 
 export function prepareClaudeRequest(body, provider = null, apiKey = null, connectionId = null, rawHeaders = null, sessionId = null) {
-  // The Claude Code identity is specific to the official Claude transport. It
-  // must not leak into unrelated Anthropic-compatible providers.
-  if (provider === "claude") {
-    const promptBlock = { type: CLAUDE_BLOCK.TEXT, text: CLAUDE_SYSTEM_PROMPT };
-    if (Array.isArray(body.system)) {
-      const alreadyPresent = body.system.some(block => block?.text === CLAUDE_SYSTEM_PROMPT);
-      if (!alreadyPresent) body.system = [promptBlock, ...body.system];
-    } else if (typeof body.system === "string" && body.system) {
-      if (!body.system.includes(CLAUDE_SYSTEM_PROMPT)) {
-        body.system = [promptBlock, { type: CLAUDE_BLOCK.TEXT, text: body.system }];
-      }
-    } else {
-      body.system = [promptBlock];
-    }
-  }
-
   // quirk: MiniMax's Claude-compatible endpoint rejects Anthropic's output_config (400 invalid params)
   if (PROVIDERS[provider]?.quirks?.dropOutputConfig) {
     delete body.output_config;
+  }
+
+  // Claude Code puts a `context_management` block (context-editing strategy) in
+  // every request; only Anthropic accepts it — gateways fronting other engines
+  // answer 400 "context_management: Extra inputs are not permitted". Same-format
+  // claude→claude requests skip body rebuilding in the translator, so the field
+  // rides through to every non-Anthropic provider on the Claude transport.
+  const isAnthropicServing = provider === "claude" || provider?.startsWith?.("anthropic-compatible-");
+  if (!isAnthropicServing) {
+    delete body.context_management;
   }
 
   // Models whose API rejects thinking "disabled" and forced tool use with a 400
@@ -553,6 +559,9 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
   }
 
   // 1. System: remove all cache_control, add only to last block with ttl 1h
+  if (body.system && typeof body.system === "object" && !Array.isArray(body.system)) {
+    body.system = [body.system];
+  }
   if (body.system && Array.isArray(body.system)) {
     body.system = body.system.map((block, i) => {
       const { cache_control, ...rest } = block;
@@ -582,8 +591,13 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
       }
 
       // Keep final assistant even if empty, otherwise check valid content
-      const isFinalAssistant = i === len - 1 && msg.role === ROLE.ASSISTANT;
-      if (isFinalAssistant || hasValidContent(msg)) {
+      const isFinalAssistant = i === len - 1 && msg.role === "assistant";
+      const hasNativeReasoning = provider === "claude" && msg.role === ROLE.ASSISTANT
+        && Array.isArray(msg.content) && msg.content.some(block =>
+          block?.type === CLAUDE_BLOCK.REDACTED_THINKING
+          || (block?.type === CLAUDE_BLOCK.THINKING && isValidClaudeSignature(block.signature)
+            && String(block.thinking ?? "").trim()));
+      if (isFinalAssistant || hasValidContent(msg) || hasNativeReasoning) {
         filtered.push(msg);
       }
     }
@@ -594,12 +608,10 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     filtered = ensureTrailingUserTurn(filtered, originalLastRole);
 
     body.messages = filtered;
-    applyAssistantPrefillPolicy(body, rawHeaders);
-    filtered = body.messages;
 
     // Check if thinking is enabled AND last message is from user
     const lastMessage = filtered[filtered.length - 1];
-    const lastMessageIsUser = lastMessage?.role === ROLE.USER;
+    const lastMessageIsUser = lastMessage?.role === "user";
     const thinkingEnabled = body.thinking?.type === "enabled" && lastMessageIsUser;
 
     // DeepSeek models also arrive behind OpenCode Go's /messages transport.
@@ -615,7 +627,7 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     for (let i = filtered.length - 1; i >= 0; i--) {
       const msg = filtered[i];
 
-      if (msg.role === ROLE.ASSISTANT && Array.isArray(msg.content)) {
+      if (msg.role === "assistant" && Array.isArray(msg.content)) {
         // Add cache_control to last non-thinking block of first (from end) assistant with content
         // thinking/redacted_thinking blocks do not support cache_control
         if (!lastAssistantProcessed && msg.content.length > 0) {
@@ -638,19 +650,23 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
           // anthropic-compatible: replace with default (safe fallback for lenient upstreams).
           // DeepSeek (official + opencode-go models): keep existing thinking as-is;
           // add an unsigned placeholder only if missing.
+          // Every branch: a block with no visible thinking text goes — the upstream
+          // Messages API rejects it outright (400 "each thinking block must contain
+          // non-whitespace thinking"), and a valid signature does not save it.
           const isClaudeNative = provider === "claude";
-          const hadThinking = msg.content.some(block =>
-            block.type === CLAUDE_BLOCK.THINKING || block.type === CLAUDE_BLOCK.REDACTED_THINKING);
           const kept = [];
           for (const block of msg.content) {
             const isThinking = block.type === CLAUDE_BLOCK.THINKING || block.type === CLAUDE_BLOCK.REDACTED_THINKING;
             if (isThinking) {
+              // Redacted reasoning is opaque provider history, not visible thinking.
+              if (isClaudeNative && block.type === CLAUDE_BLOCK.REDACTED_THINKING) {
+                hasKeptThinking = true;
+                kept.push(block);
+                continue;
+              }
+              if (!String(block.thinking ?? "").trim()) continue;
               if (isClaudeNative) {
-                // redacted_thinking is opaque server-owned history. It carries
-                // `data`, not a replayable thinking signature, and Anthropic
-                // accepts it unchanged. Do not treat it as an unsigned
-                // thinking block or prefill policy's preservation is undone.
-                if (block.type === CLAUDE_BLOCK.REDACTED_THINKING || isValidClaudeSignature(block.signature)) {
+                if (isValidClaudeSignature(block.signature)) {
                   hasKeptThinking = true;
                   kept.push(block);
                 }
@@ -668,9 +684,6 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
             kept.push(block);
           }
           msg.content = kept;
-          if (isClaudeNative && hadThinking && kept.length === 0) {
-            throw new ToolCompatibilityError("Claude native cannot preserve unsigned reasoning-only assistant history");
-          }
 
           // Add thinking block if thinking enabled + has tool_use but no thinking
           if (thinkingEnabled && !hasKeptThinking && hasToolUse) {
@@ -682,8 +695,6 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
   }
 
   // 3. Tools: filter built-in tools for non-Anthropic providers, then handle cache_control
-  const requestedToolChoice = body.tool_choice;
-  const hadDeclaredTools = Array.isArray(body.tools) && body.tools.length > 0;
   if (body.tools && Array.isArray(body.tools)) {
     // Strip built-in tools (e.g. web_search_20250305) and normalize to Anthropic-native shape
     // (drop `type` field, fold `function.{name,description,parameters}`) for non-Anthropic providers
@@ -739,14 +750,6 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     }
   }
 
-  // Provider-specific filtering is the last tool boundary. A forced/required
-  // choice cannot disappear with a hosted declaration or point to another tool.
-  if (hadDeclaredTools &&
-      ((requestedToolChoice?.type === "tool" && !body.tools?.some(tool => tool.name === requestedToolChoice.name)) ||
-       (requestedToolChoice?.type === "any" && !body.tools?.length))) {
-    throw new ToolCompatibilityError("Claude target removed a required or selected tool");
-  }
-
   // Anthropic itself reads images inside tool_result; other Anthropic-compatible
   // endpoints (OpenCode Go, Kimi, DeepSeek, GLM, MiniMax) accept image blocks
   // only as user content and silently drop them inside a tool result. Move a
@@ -755,7 +758,8 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     body = hoistToolResultImages(body);
   }
 
-  // A tool loop's final tool results: cached now, so the next step reads them.
+  // Normalize the terminal turn before choosing cache breakpoints.
+  applyAssistantPrefillPolicy(body, rawHeaders);
   markFinalToolResults(body);
 
   // Apply cloaking for OAuth tokens (billing header + fake user ID)

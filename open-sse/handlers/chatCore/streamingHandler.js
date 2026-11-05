@@ -12,6 +12,55 @@ import { saveRequestDetail } from "@/lib/usageDb.js";
 import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
 import { upstreamResponseHeaders } from "../../utils/upstreamHeaders.js";
 
+const NON_SSE_BODY_MAX_BYTES = 16 * 1024;
+const NON_SSE_BODY_TIMEOUT_MS = 5000;
+
+async function readNonSSEBody(response, signal) {
+  if (!response.body) return '';
+  let reader;
+  const bytes = new Uint8Array(NON_SSE_BODY_MAX_BYTES);
+  let length = 0;
+  let done = false;
+  let emptyReads = 0;
+  let timeout;
+  let stop;
+  const stopped = new Promise(resolve => { stop = () => resolve(null); });
+  const onAbort = () => stop();
+  try {
+    reader = response.body.getReader();
+    timeout = setTimeout(stop, NON_SSE_BODY_TIMEOUT_MS);
+    if (signal?.aborted) return '';
+    signal?.addEventListener('abort', onAbort, { once: true });
+    while (length < bytes.length) {
+      const chunk = await Promise.race([reader.read(), stopped]);
+      if (!chunk) break;
+      if (chunk.done) { done = true; break; }
+      const value = chunk.value;
+      if (!value?.byteLength) {
+        if (++emptyReads >= 32) break;
+        continue;
+      }
+      emptyReads = 0;
+      const count = Math.min(value.byteLength, bytes.length - length);
+      bytes.set(value.subarray(0, count), length);
+      length += count;
+    }
+    return new TextDecoder().decode(bytes.subarray(0, length));
+  } catch {
+    return '';
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', onAbort);
+    if (reader) {
+      // Do not let upstream cancellation hold up the complete error response.
+      if (!done) {
+        try { Promise.resolve(reader.cancel()).catch(() => {}); } catch { /* best-effort cancellation */ }
+      }
+      reader.releaseLock();
+    }
+  }
+}
+
 // Codex returns Responses API SSE → which client format to translate INTO, by request sourceFormat.
 // Gemini-family all map to ANTIGRAVITY decoder; unknown sources fall back to OPENAI.
 const CODEX_SOURCE_TO_TARGET = {
@@ -36,7 +85,7 @@ function buildTransformStream({ provider, sourceFormat, targetFormat, reqLogger,
   if (needsTranslation(targetFormat, sourceFormat)) {
     return createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, customToolNames, credentials);
   }
-  return createPassthroughStreamWithLogger(provider, reqLogger, model, connectionId, body, onStreamComplete, apiKey, sourceFormat);
+  return createPassthroughStreamWithLogger(provider, reqLogger, model, connectionId, body, onStreamComplete, apiKey, toolNameMap, sourceFormat);
 }
 
 function sanitizedUpstreamMessage(text, contentType) {
@@ -124,11 +173,12 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
       if (normalized.result) return normalized.result;
       providerResponse = normalized.response;
     } else {
-      const bodyText = await providerResponse.text().catch(() => "");
+      const bodyText = await readNonSSEBody(providerResponse, streamController?.signal);
       const shortMsg = sanitizedUpstreamMessage(bodyText, upstreamContentType);
       if (log?.errorLine) log.errorLine(reqTag, "✗", `BLOCKED 502 · ${provider}/${model} · non-SSE (${upstreamContentType || "missing"})`);
       streamController?.handleError?.(new Error("upstream non-SSE"));
-      return errorResult(HTTP_STATUS.BAD_GATEWAY, `[502]: ${shortMsg}`);
+      const status = providerResponse.ok ? HTTP_STATUS.BAD_GATEWAY : providerResponse.status;
+      return errorResult(status, `[${status}]: ${shortMsg}`);
     }
   }
 

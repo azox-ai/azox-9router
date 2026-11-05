@@ -53,6 +53,61 @@ function localRequest(pathname, headers = {}) {
   return request(pathname, { "x-9r-peer-token": PEER_TOKEN, "x-9r-real-ip": "127.0.0.1", ...headers });
 }
 
+describe("retired AZOX Contributor endpoints", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getSettings.mockResolvedValue({ requireLogin: true });
+    mocks.verifyDashboardAuthToken.mockResolvedValue(false);
+  });
+
+  it.each(["/api/contribute/session", "/api/contributor-admin/invites", "/api/import-export/combos"])(
+    "does not exempt %s from dashboard auth", async (path) => {
+      expect(await proxy(request(path))).toEqual({
+        status: 401,
+        body: { error: "Unauthorized" },
+      });
+    },
+  );
+});
+
+describe("Portal credential sync service route", () => {
+  const PORTAL_PATH = "/api/internal/portal/connections/account-1";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.PORTAL_SYNC_TOKEN = "portal-secret";
+    mocks.getSettings.mockResolvedValue({ requireLogin: true });
+    mocks.verifyDashboardAuthToken.mockResolvedValue(false);
+  });
+
+  it("admits the Portal service bearer token without a dashboard session", async () => {
+    const response = await proxy(request(PORTAL_PATH, { authorization: "Bearer portal-secret" }));
+    expect(response).toBe(mocks.nextResponse);
+  });
+
+  it.each([
+    ["a wrong bearer token", { authorization: "Bearer wrong" }],
+    ["a non-bearer scheme", { authorization: "Basic portal-secret" }],
+    ["no authorization header", {}],
+  ])("rejects %s", async (_label, headers) => {
+    expect(await proxy(request(PORTAL_PATH, headers))).toEqual({
+      status: 401, body: { error: "Unauthorized" },
+    });
+  });
+
+  it("fails closed when PORTAL_SYNC_TOKEN is unset, even for a dashboard session", async () => {
+    delete process.env.PORTAL_SYNC_TOKEN;
+    mocks.verifyDashboardAuthToken.mockResolvedValue(true);
+    const response = await proxy(request(PORTAL_PATH, { authorization: "Bearer " }));
+    expect(response).toEqual({ status: 401, body: { error: "Unauthorized" } });
+  });
+
+  it("does not let the Portal token open other API routes", async () => {
+    const response = await proxy(request("/api/providers", { authorization: "Bearer portal-secret" }));
+    expect(response).toEqual({ status: 401, body: { error: "Unauthorized" } });
+  });
+});
+
 describe("dashboard guard public LLM API access", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -68,22 +123,6 @@ describe("dashboard guard public LLM API access", () => {
 
     expect(response).toBe(mocks.nextResponse);
     expect(mocks.validateApiKey).not.toHaveBeenCalled();
-  });
-
-  it("allows portal internal API with valid service token", async () => {
-    process.env.PORTAL_SYNC_TOKEN = "portal-secret";
-    const response = await proxy(request("/api/internal/portal/connections/account-1", {
-      authorization: "Bearer portal-secret",
-    }));
-    expect(response).toBe(mocks.nextResponse);
-  });
-
-  it("rejects portal internal API with invalid service token", async () => {
-    process.env.PORTAL_SYNC_TOKEN = "portal-secret";
-    const response = await proxy(request("/api/internal/portal/connections/account-1", {
-      authorization: "Bearer wrong",
-    }));
-    expect(response.status).toBe(401);
   });
 
   it("rejects remote Host-spoof when real peer IP is non-loopback", async () => {

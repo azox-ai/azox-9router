@@ -80,6 +80,29 @@ describe("selectConnectionsNeedingRefresh", () => {
     expect(list).toHaveLength(0);
   });
 
+  it("excludes Portal-managed rows: Portal owns their refresh token", async () => {
+    const { selectConnectionsNeedingRefresh } = await import(
+      "../../src/sse/services/backgroundTokenRefresh.js"
+    );
+    const portal = conn({
+      id: "portal",
+      provider: "claude",
+      refreshToken: undefined,
+      expiresAt: new Date(NOW - 60 * 1000).toISOString(),
+      providerSpecificData: { portalExternalId: "portal-1", portalTokenVersion: 3 },
+    });
+    const portalWithLegacyRefresh = conn({
+      id: "portal-legacy",
+      provider: "codex",
+      refreshToken: "stale-router-copy",
+      expiresAt: new Date(NOW + 60 * 1000).toISOString(),
+      providerSpecificData: { portalExternalId: "portal-2", portalTokenVersion: 1 },
+    });
+    const direct = conn({ id: "direct", provider: "claude" });
+    const list = selectConnectionsNeedingRefresh([portal, portalWithLegacyRefresh, direct], NOW);
+    expect(list.map((c) => c.id)).toEqual(["direct"]);
+  });
+
   it("selects already-expired oauth connection", async () => {
     const { selectConnectionsNeedingRefresh } = await import(
       "../../src/sse/services/backgroundTokenRefresh.js"

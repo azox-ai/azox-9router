@@ -1,35 +1,4 @@
 import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS } from "../config/errorConfig.js";
-import { HTTP_STATUS } from "../config/runtimeConfig.js";
-
-const ASSISTANT_PREFILL_UNSUPPORTED = "does not support assistant message prefill";
-
-const UNSUPPORTED_TOOL_PATTERNS = [
-  "unsupported tool type",
-  "unknown tool type",
-  "tool type is not supported",
-  "unsupported tool",
-];
-
-function normalizeErrorText(errorText) {
-  if (!errorText) return "";
-  return (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase();
-}
-
-export function isAssistantPrefillUnsupportedError(status, errorText) {
-  if (status !== 400 || !errorText) return false;
-  return normalizeErrorText(errorText).includes(ASSISTANT_PREFILL_UNSUPPORTED);
-}
-
-export function isUnsupportedToolTypeError(status, errorText) {
-  if (status !== 400 || !errorText) return false;
-  const normalized = normalizeErrorText(errorText);
-  return UNSUPPORTED_TOOL_PATTERNS.some((pattern) => normalized.includes(pattern));
-}
-
-export function isModelCompatibilityError(status, errorText) {
-  return isAssistantPrefillUnsupportedError(status, errorText)
-    || isUnsupportedToolTypeError(status, errorText);
-}
 
 /**
  * Calculate exponential backoff cooldown for rate limits (429)
@@ -49,13 +18,15 @@ export function getQuotaCooldown(backoffLevel = 0) {
  * @param {number} status - HTTP status code
  * @param {string} errorText - Error message text
  * @param {number} backoffLevel - Current backoff level for exponential backoff
- * @returns {{ shouldFallback: boolean, cooldownMs: number, newBackoffLevel?: number }}
+ * @returns {{ shouldFallback: boolean, cooldownMs: number, newBackoffLevel?: number, requestScoped?: boolean }}
+ *
+ * `shouldFallback` answers "is the CREDENTIAL at fault?" (account rotation).
+ * `requestScoped` answers "is the REQUEST itself what this member rejected?"
+ * (combo rotation). They are different questions: a context overflow or a
+ * validation 400 means the credential is healthy but this member cannot serve
+ * this request, so combo rotation must still try the next member.
  */
 export function checkFallbackError(status, errorText, backoffLevel = 0, provider = null) {
-  if (status === HTTP_STATUS.CLIENT_CLOSED_REQUEST || isModelCompatibilityError(status, errorText)) {
-    return { shouldFallback: false, cooldownMs: 0 };
-  }
-
   const lowerError = errorText
     ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
     : "";
@@ -64,7 +35,6 @@ export function checkFallbackError(status, errorText, backoffLevel = 0, provider
     if (rule.provider && rule.provider !== provider) continue;
     // Text-based rule: match substring in error message
     if (rule.text && lowerError && lowerError.includes(rule.text)) {
-      if (rule.shouldFallback === false) return { shouldFallback: false, cooldownMs: 0 };
       if (rule.backoff) {
         const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
         return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel };
@@ -74,7 +44,6 @@ export function checkFallbackError(status, errorText, backoffLevel = 0, provider
 
     // Status-based rule: match HTTP status code
     if (rule.status && rule.status === status) {
-      if (rule.shouldFallback === false) return { shouldFallback: false, cooldownMs: 0 };
       if (rule.backoff) {
         const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
         return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel };
@@ -94,7 +63,7 @@ export function checkFallbackError(status, errorText, backoffLevel = 0, provider
   // Account-scoped statuses keep their rules above (401/402/403/404/429), and the
   // text rules still win for rate-limit / quota / capacity wording.
   if (status >= 400 && status < 500 && status !== 401 && status !== 402 && status !== 403 && status !== 429) {
-    return { shouldFallback: false, cooldownMs: 0 };
+    return { shouldFallback: false, cooldownMs: 0, requestScoped: true };
   }
 
   // Default: transient cooldown for any unmatched error

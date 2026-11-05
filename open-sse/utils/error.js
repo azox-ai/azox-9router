@@ -197,53 +197,12 @@ export async function readUpstreamBodyText(
 }
 
 /**
- * Recreate a consumed fetch Response without forwarding stale wire-framing
- * headers. fetch() exposes decoded bytes, so retaining content-encoding or the
- * original content-length can corrupt the replayed body downstream.
- */
-export function rebuildUpstreamResponse(response, bodyText = "") {
-  if (typeof Response !== "function" || !Number.isInteger(response?.status)) return response;
-  const headers = new Headers(response.headers);
-  headers.delete("content-length");
-  headers.delete("content-encoding");
-  headers.delete("transfer-encoding");
-  headers.delete("digest");
-  headers.delete("content-digest");
-  headers.delete("repr-digest");
-  headers.delete("content-md5");
-  headers.delete("etag");
-  headers.delete("content-range");
-  headers.delete("trailer");
-  const contentType = headers.get("content-type");
-  const mediaType = contentType?.split(";", 1)[0].trim().toLowerCase();
-  if (
-    mediaType?.startsWith("text/")
-    || mediaType === "application/json"
-    || mediaType?.endsWith("+json")
-    || mediaType === "application/xml"
-    || mediaType?.endsWith("+xml")
-  ) {
-    const parameters = contentType.split(";").slice(1)
-      .map(value => value.trim())
-      .filter(value => value && !/^charset\s*=/i.test(value));
-    headers.set("content-type", [mediaType, ...parameters, "charset=utf-8"].join("; "));
-  }
-  const body = [204, 205, 304].includes(response.status) ? null : bodyText;
-  return new Response(body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
-/**
  * Build OpenAI-compatible error response body
  * @param {number} statusCode - HTTP status code
  * @param {string} message - Error message
- * @param {string} [errorCode] - Optional specific client-facing error code
  * @returns {object} Error response object
  */
-export function buildErrorBody(statusCode, message, errorCode) {
+export function buildErrorBody(statusCode, message) {
   const errorInfo = ERROR_TYPES[statusCode] || 
     (statusCode >= 500 
       ? { type: "server_error", code: "internal_server_error" }
@@ -253,7 +212,7 @@ export function buildErrorBody(statusCode, message, errorCode) {
     error: {
       message: message || DEFAULT_ERROR_MESSAGES[statusCode] || "An error occurred",
       type: errorInfo.type,
-      code: errorCode ?? errorInfo.code
+      code: errorInfo.code
     }
   };
 }
@@ -262,12 +221,10 @@ export function buildErrorBody(statusCode, message, errorCode) {
  * Create error Response object (for non-streaming)
  * @param {number} statusCode - HTTP status code
  * @param {string} message - Error message
- * @param {HeadersInit} [extraHeaders] - Optional upstream response headers
- * @param {string} [errorCode] - Optional specific client-facing error code
  * @returns {Response} HTTP Response object
  */
-export function errorResponse(statusCode, message, extraHeaders = null, errorCode) {
-  return new Response(JSON.stringify(buildErrorBody(statusCode, message, errorCode)), {
+export function errorResponse(statusCode, message, extraHeaders = null) {
+  return new Response(JSON.stringify(buildErrorBody(statusCode, message)), {
     status: statusCode,
     headers: {
       "Content-Type": "application/json",
@@ -341,17 +298,15 @@ export const UPSTREAM_BODY_STALL_TIMEOUT_MS = DEFAULT_UPSTREAM_BODY_STALL_TIMEOU
  * @param {number} statusCode - HTTP status code
  * @param {string} message - Error message
  * @param {number} [resetsAtMs] - Optional precise cooldown expiry (ms epoch) for provider-specific quota errors
- * @param {HeadersInit} [extraHeaders] - Optional upstream response headers
- * @param {string} [errorCode] - Optional specific client-facing error code
  * @returns {{ success: false, status: number, error: string, response: Response, resetsAtMs?: number }}
  */
-export function createErrorResult(statusCode, message, resetsAtMs, extraHeaders = null, errorCode) {
+export function createErrorResult(statusCode, message, resetsAtMs, extraHeaders = null) {
   return {
     success: false,
     status: statusCode,
     error: message,
     resetsAtMs,
-    response: errorResponse(statusCode, message, extraHeaders, errorCode)
+    response: errorResponse(statusCode, message, extraHeaders)
   };
 }
 
@@ -365,8 +320,7 @@ export function createErrorResult(statusCode, message, resetsAtMs, extraHeaders 
  */
 export function unavailableResponse(statusCode, message, retryAfter, retryAfterHuman, extraHeaders = null) {
   const retryAfterSec = Math.max(Math.ceil((new Date(retryAfter).getTime() - Date.now()) / 1000), 1);
-  const suffix = `(${retryAfterHuman})`;
-  const msg = typeof message === "string" && message.endsWith(suffix) ? message : `${message} ${suffix}`;
+  const msg = `${message} (${retryAfterHuman})`;
   return new Response(
     JSON.stringify({ error: { message: msg } }),
     {

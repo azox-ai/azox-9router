@@ -5,6 +5,8 @@ import { createSSEFrameParser, parseSSEFrame } from "./sseFrameParser.js";
 import { createStreamTerminalState } from "./streamTerminalState.js";
 import { FORMATS } from "../translator/formats.js";
 
+const INCOMPLETE_STREAM_MESSAGE = "incomplete upstream stream (missing finish_reason)";
+
 // Get HH:MM:SS timestamp
 function getTimeString() {
   return new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -168,7 +170,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
         let pendingReleased = false;
         if (!observed?.terminal) {
           pendingReleased = streamController.handleError(error) === true;
-          try { emitFailure(controller, error?.message === "stream stall timeout" ? "stream stall timeout" : "upstream connection lost"); }
+          try { emitFailure(controller, error?.code === "INCOMPLETE_STREAM" ? INCOMPLETE_STREAM_MESSAGE : (error?.message === "stream stall timeout" ? "stream stall timeout" : "upstream connection lost")); }
           catch { /* downstream may have closed; never expose raw transport errors */ }
         } else streamController.handleComplete();
         // A stall watchdog may have released pending before this read failed.

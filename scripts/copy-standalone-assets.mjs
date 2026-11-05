@@ -2,6 +2,13 @@ import { cpSync, existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
+export const DISTRIBUTION_NOTICE_FILES = [
+  "LICENSE",
+  "THIRD_PARTY_NOTICES.md",
+  "third_party/licenses/LGPL-3.0.txt",
+  "third_party/licenses/GPL-3.0.txt",
+];
+
 export function copyStandaloneAssets({ projectRoot = process.cwd(), distDir = process.env.NEXT_DIST_DIR || ".next" } = {}) {
   if (process.env.NEXT_TRACING_ROOT_MODE === "workspace") {
     console.log("[standalone-assets] Skipping workspace-traced CLI build; CLI packaging handles assets");
@@ -50,6 +57,19 @@ export function copyStandaloneAssets({ projectRoot = process.cwd(), distDir = pr
   mkdirSync(dirname(sqlJsWasmDestination), { recursive: true });
   cpSync(sqlJsWasmSource, sqlJsWasmDestination, { force: true });
   console.log(`[standalone-assets] Copied SQL.js runtime asset to ${sqlJsWasmDestination}`);
+
+  // License files are distribution obligations, not runtime inputs. The Docker
+  // runner copies .next/standalone to /app, so these land at /app/<path>.
+  for (const path of DISTRIBUTION_NOTICE_FILES) {
+    const source = resolve(projectRoot, path);
+    if (!existsSync(source)) {
+      throw new Error(`[standalone-assets] Required distribution notice is missing: ${source}`);
+    }
+    const destination = resolve(standaloneDir, path);
+    mkdirSync(dirname(destination), { recursive: true });
+    cpSync(source, destination, { force: true });
+  }
+  console.log(`[standalone-assets] Copied ${DISTRIBUTION_NOTICE_FILES.length} license/notice files to ${standaloneDir}`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(dirname(fileURLToPath(import.meta.url)), "copy-standalone-assets.mjs")) {

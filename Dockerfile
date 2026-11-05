@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-ARG NODE_IMAGE=node:22-alpine
+ARG NODE_IMAGE=node:22.23.4-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 ARG ALPINE_MIRROR=dl-cdn.alpinelinux.org
 ARG NPM_REGISTRY=https://registry.npmjs.org/
 ARG APP_VERSION=unknown
@@ -21,7 +21,7 @@ RUN apk add --no-cache python3 make g++ linux-headers
 
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
-    npm ci --legacy-peer-deps \
+    npm ci --ignore-scripts --include=dev --include=optional --no-audit --no-fund \
       --registry="${NPM_REGISTRY}" \
       --fetch-retries=5 \
       --fetch-retry-factor=2 \
@@ -29,9 +29,25 @@ RUN --mount=type=cache,target=/root/.npm \
       --fetch-retry-maxtimeout=120000 \
       --fetch-timeout=300000
 
+# Lifecycle scripts are disabled above. Build the only native addon from the
+# locked source with the base image's Node headers, offline (no prebuild fetch).
+RUN --network=none cd node_modules/better-sqlite3 && \
+    node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js \
+      rebuild --release --nodedir=/usr/local && \
+    node -e "require('./')(':memory:').close()"
+
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build
+RUN --network=none npm run build
+
+# https://github.com/decolua/9router/issues/5245
+# wreq-js and playwright-core are lazy runtime dependencies (loaded by
+# lazyRuntime.js via createRequire). Next standalone tracing does not include
+# them. They and the platform wreq bindings come from the same lockfile install
+# (exact versions + integrity), so no second, unversioned resolution happens.
+RUN mkdir -p /opt/lazy-runtime/node_modules && \
+    cp -a node_modules/wreq-js node_modules/playwright-core node_modules/@wreq-js \
+      /opt/lazy-runtime/node_modules/
 
 FROM ${NODE_IMAGE} AS runner
 ARG ALPINE_MIRROR
@@ -67,6 +83,9 @@ COPY --from=builder /app/node_modules/next ./node_modules/next
 COPY --from=builder /app/node_modules/sql.js ./node_modules/sql.js
 # node-machine-id is createRequire-loaded at runtime; tracing omits it.
 COPY --from=builder /app/node_modules/node-machine-id ./node_modules/node-machine-id
+# wreq-js + playwright-core (and deps) are lazy-loaded at runtime and omitted by
+# tracing. See https://github.com/decolua/9router/issues/5245
+COPY --from=builder /opt/lazy-runtime/node_modules/. ./node_modules/
 
 RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home && chown node:node /app/data-home && \
@@ -74,7 +93,7 @@ RUN mkdir -p /app/data && chown -R node:node /app && \
 
 # Avoid a full distribution upgrade in the runtime image. It makes builds less
 # reproducible and is unrelated to installing the runtime entrypoint helper.
-RUN apk add --no-cache su-exec && \
+RUN apk add --no-cache su-exec ffmpeg && \
   printf '#!/bin/sh\nchown -R node:node /app/data /app/data-home 2>/dev/null\nexec su-exec node "$@"\n' > /entrypoint.sh && \
   chmod +x /entrypoint.sh
 

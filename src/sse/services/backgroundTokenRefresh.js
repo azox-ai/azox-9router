@@ -55,6 +55,9 @@ export function selectConnectionsNeedingRefresh(connections, nowMs = Date.now())
     const authType = String(conn.authType || "").toLowerCase().replace(/_/g, "");
     if (authType !== "oauth") continue;
     if (!conn.refreshToken) continue;
+    // Portal owns the refresh token for Portal-managed rows; a legacy router copy
+    // must never be used to rotate it here.
+    if (conn.providerSpecificData?.portalExternalId) continue;
 
     const expiresAtMs = getCredentialExpiryMs(conn);
     if (expiresAtMs === null) continue;

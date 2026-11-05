@@ -1,13 +1,15 @@
 import { EventEmitter } from "events";
+import { createHash } from "node:crypto";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
-  if (key.length <= 12) return key.charAt(0) + "***";
+  const trimmed = key.trim();
+  if (trimmed.length <= 12) return trimmed.charAt(0) + "***";
   // Keep the tail: keys sharing a machine-id prefix (team keys) must not collide.
-  return key.slice(0, 8) + "***" + key.slice(-4);
+  return trimmed.slice(0, 8) + "***" + trimmed.slice(-4);
 }
 
 const PENDING_TIMEOUT_MS = 60 * 1000;
@@ -213,6 +215,7 @@ export async function getActiveRequests() {
   }
 
   await ensureRingInitialized();
+  const seen = new Set();
   const recentRequests = [...recentRing.items]
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
     .map((e) => {
@@ -224,7 +227,14 @@ export async function getActiveRequests() {
         status: e.status || "ok",
       };
     })
-    .filter((e) => e.promptTokens !== 0 || e.completionTokens !== 0)
+    .filter((e) => {
+      if (e.promptTokens === 0 && e.completionTokens === 0) return false;
+      const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
+      const key = `${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
     .slice(0, 20);
 
   const errorProvider = (Date.now() - lastErrorProvider.ts < 10000) ? lastErrorProvider.provider : "";
@@ -235,48 +245,72 @@ export async function saveRequestUsage(entry) {
   try {
     const db = await getAdapter();
 
-    const usageEntry = {
-      ...entry,
-      timestamp: entry.timestamp || new Date().toISOString(),
-      cost: await calculateCost(entry.provider, entry.model, entry.tokens),
-    };
+    if (!entry.timestamp) entry.timestamp = new Date().toISOString();
+    entry.cost = await calculateCost(entry.provider, entry.model, entry.tokens);
 
-    const tokens = usageEntry.tokens || {};
+    const tokens = entry.tokens || {};
     const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
     const completionTokens = tokens.completion_tokens || tokens.output_tokens || 0;
 
+    let inserted = false;
+
     // All 3 writes (history insert, daily upsert, lifetime counter) in ONE transaction.
     // better-sqlite3 is sync → no JS yield mid-transaction → no race in same process.
-    // Each call records an independent usage event. Equal timestamps and token
-    // counts are not request identity; callers own once-only completion logging.
     db.transaction(() => {
+      const existing = db.get(
+        `SELECT id, endpoint FROM usageHistory
+         WHERE timestamp = ?
+           AND COALESCE(provider, '') = COALESCE(?, '')
+           AND COALESCE(model, '') = COALESCE(?, '')
+           AND COALESCE(connectionId, '') = COALESCE(?, '')
+           AND COALESCE(apiKey, '') = COALESCE(?, '')
+           AND promptTokens = ?
+           AND completionTokens = ?
+         ORDER BY id DESC LIMIT 1`,
+        [
+          entry.timestamp, entry.provider || null, entry.model || null,
+          entry.connectionId || null, entry.apiKey || null,
+          promptTokens, completionTokens,
+        ]
+      );
+
+      if (existing) {
+        if (!existing.endpoint && entry.endpoint) {
+          db.run(`UPDATE usageHistory SET endpoint = ? WHERE id = ?`, [entry.endpoint, existing.id]);
+        }
+        return;
+      }
+
       db.run(
         `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          usageEntry.timestamp, usageEntry.provider || null, usageEntry.model || null,
-          usageEntry.connectionId || null, usageEntry.apiKey || null, usageEntry.endpoint || null,
-          promptTokens, completionTokens, usageEntry.cost || 0, usageEntry.status || "ok",
+          entry.timestamp, entry.provider || null, entry.model || null,
+          entry.connectionId || null, entry.apiKey || null, entry.endpoint || null,
+          promptTokens, completionTokens, entry.cost || 0, entry.status || "ok",
           stringifyJson(tokens), stringifyJson({}),
         ]
       );
 
-      const dateKey = getLocalDateKey(usageEntry.timestamp);
+      const dateKey = getLocalDateKey(entry.timestamp);
       const row = db.get(`SELECT data FROM usageDaily WHERE dateKey = ?`, [dateKey]);
       const day = row ? parseJson(row.data, {}) : {
         requests: 0, promptTokens: 0, completionTokens: 0, cost: 0,
         byProvider: {}, byModel: {}, byAccount: {}, byApiKey: {}, byEndpoint: {},
       };
-      aggregateEntryToDay(day, usageEntry);
+      aggregateEntryToDay(day, entry);
       db.run(`INSERT INTO usageDaily(dateKey, data) VALUES(?, ?) ON CONFLICT(dateKey) DO UPDATE SET data = excluded.data`, [dateKey, stringifyJson(day)]);
 
       // Atomic counter increment in same transaction
       const cur = db.get(`SELECT value FROM _meta WHERE key = 'totalRequestsLifetime'`);
       const next = (cur ? parseInt(cur.value, 10) : 0) + 1;
       db.run(`INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(next)]);
+      inserted = true;
     });
 
-    pushToRing(usageEntry);
-    scheduleStatsEvent("update", 250);
+    if (inserted) {
+      pushToRing(entry);
+      scheduleStatsEvent("update", 250);
+    }
   } catch (e) {
     console.error("Failed to save usage stats:", e);
   }
@@ -335,10 +369,13 @@ export async function getUsageStats(period = "all") {
   let allApiKeys = [];
   try { allApiKeys = await getApiKeys(); } catch {}
   const apiKeyMap = {};
-  for (const k of allApiKeys) apiKeyMap[k.key] = { name: k.name, id: k.id, createdAt: k.createdAt };
+  for (const k of allApiKeys) {
+    if (k.key) apiKeyMap[k.key.trim()] = { name: k.name, id: k.id, createdAt: k.createdAt };
+  }
 
-  // Keep independent records even when their displayed values happen to match.
+  // recentRequests from live history (last 100 entries enough for 20 deduped)
   const recentRows = db.all(`SELECT timestamp, provider, model, tokens, status FROM usageHistory ORDER BY id DESC LIMIT 100`);
+  const seen = new Set();
   const recentRequests = recentRows
     .map((r) => {
       const t = parseJson(r.tokens, {}) || {};
@@ -350,7 +387,14 @@ export async function getUsageStats(period = "all") {
         status: r.status || "ok",
       };
     })
-    .filter((e) => e.promptTokens !== 0 || e.completionTokens !== 0)
+    .filter((e) => {
+      if (e.promptTokens === 0 && e.completionTokens === 0) return false;
+      const minute = e.timestamp ? e.timestamp.slice(0, 16) : "";
+      const key = `${e.model}|${e.provider}|${e.promptTokens}|${e.completionTokens}|${minute}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
     .slice(0, 20);
 
   const stats = {
@@ -465,10 +509,10 @@ export async function getUsageStats(period = "all") {
         const rawModel = ak.rawModel || "";
         const provider = ak.provider || "";
         const providerDisplayName = providerNodeNameMap[provider] || provider;
-        const apiKeyVal = ak.apiKey;
+        const apiKeyVal = ak.apiKey ? ak.apiKey.trim() : null;
         const keyInfo = apiKeyVal ? apiKeyMap[apiKeyVal] : null;
-        const keyName = keyInfo?.name || (apiKeyVal ? apiKeyVal.slice(0, 8) + "..." : "Local (No API Key)");
         const apiKeyMasked = maskApiKey(apiKeyVal);
+        const keyName = keyInfo?.name || (apiKeyVal ? (apiKeyMasked || apiKeyVal.slice(0, 8) + "...") : "Local (No API Key)");
         const apiKeyKey = apiKeyMasked || "local-no-key";
         if (!stats.byApiKey[akKey]) {
           stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel, provider: providerDisplayName, apiKeyMasked, keyName, apiKeyKey, lastUsed: dateKey };
@@ -522,9 +566,8 @@ export async function getUsageStats(period = "all") {
         if (stats.byAccount[accountKey] && new Date(ts) > new Date(stats.byAccount[accountKey].lastUsed)) stats.byAccount[accountKey].lastUsed = ts;
       }
 
-      const apiKeyKey = (e.apiKey && typeof e.apiKey === "string")
-        ? `${e.apiKey}|${e.model}|${e.provider || "unknown"}`
-        : "local-no-key";
+      const apiKeyVal = (e.apiKey && typeof e.apiKey === "string") ? e.apiKey : "local-no-key";
+      const apiKeyKey = `${apiKeyVal}|${e.model}|${e.provider || "unknown"}`;
       if (stats.byApiKey[apiKeyKey] && new Date(ts) > new Date(stats.byApiKey[apiKeyKey].lastUsed)) stats.byApiKey[apiKeyKey].lastUsed = ts;
 
       const endpoint = e.endpoint || "Unknown";
@@ -548,8 +591,8 @@ export async function getUsageStats(period = "all") {
 
     for (const r of filtered) {
       const tokens = parseJson(r.tokens, {}) || {};
-      const promptTokens = tokens.prompt_tokens || 0;
-      const completionTokens = tokens.completion_tokens || 0;
+      const promptTokens = tokens.prompt_tokens || tokens.input_tokens || r.promptTokens || 0;
+      const completionTokens = tokens.completion_tokens || tokens.output_tokens || r.completionTokens || 0;
       const cachedTokens = tokens.cached_tokens || tokens.cache_read_input_tokens || 0;
       const entryCost = r.cost || 0;
       const providerDisplayName = providerNodeNameMap[r.provider] || r.provider;
@@ -592,9 +635,10 @@ export async function getUsageStats(period = "all") {
       }
 
       if (r.apiKey && typeof r.apiKey === "string") {
-        const keyInfo = apiKeyMap[r.apiKey];
-        const keyName = keyInfo?.name || r.apiKey.slice(0, 8) + "...";
-        const apiKeyMasked = maskApiKey(r.apiKey);
+        const apiKeyVal = r.apiKey.trim();
+        const keyInfo = apiKeyMap[apiKeyVal];
+        const apiKeyMasked = maskApiKey(apiKeyVal);
+        const keyName = keyInfo?.name || apiKeyMasked || r.apiKey.slice(0, 8) + "...";
         // Key by the FULL api key (same as the daily rollup + lastUsed overlay)
         // — masking here collided all keys sharing a prefix into one bucket.
         const akKey = `${r.apiKey}|${r.model}|${r.provider || "unknown"}`;
@@ -605,10 +649,11 @@ export async function getUsageStats(period = "all") {
         ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
         if (new Date(r.timestamp) > new Date(ake.lastUsed)) ake.lastUsed = r.timestamp;
       } else {
-        if (!stats.byApiKey["local-no-key"]) {
-          stats.byApiKey["local-no-key"] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked: null, keyName: "Local (No API Key)", apiKeyKey: "local-no-key", lastUsed: r.timestamp };
+        const akKey = `local-no-key|${r.model}|${r.provider || "unknown"}`;
+        if (!stats.byApiKey[akKey]) {
+          stats.byApiKey[akKey] = { requests: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cost: 0, rawModel: r.model, provider: providerDisplayName, apiKeyMasked: null, keyName: "Local (No API Key)", apiKeyKey: "local-no-key", lastUsed: r.timestamp };
         }
-        const ake = stats.byApiKey["local-no-key"];
+        const ake = stats.byApiKey[akKey];
         ake.requests++; ake.promptTokens += promptTokens; ake.completionTokens += completionTokens; ake.cachedTokens += cachedTokens; ake.cost += entryCost;
         if (new Date(r.timestamp) > new Date(ake.lastUsed)) ake.lastUsed = r.timestamp;
       }
@@ -625,6 +670,17 @@ export async function getUsageStats(period = "all") {
   }
 
   stats.totalRequests = Object.values(stats.byProvider).reduce((sum, p) => sum + (p.requests || 0), 0);
+
+  // Keep full-key attribution internal, including the daily lastUsed overlay.
+  // Public IDs must not reveal credentials or merge keys sharing a display mask.
+  const publicByApiKey = {};
+  for (const [internalKey, entry] of Object.entries(stats.byApiKey)) {
+    const publicKey = "usage-key-" + createHash("sha256")
+      .update("usage-stats-api-key:v1\0").update(internalKey).digest("hex");
+    if (Object.hasOwn(publicByApiKey, publicKey)) throw new Error("Usage statistics identity collision");
+    publicByApiKey[publicKey] = entry;
+  }
+  stats.byApiKey = publicByApiKey;
   return stats;
 }
 

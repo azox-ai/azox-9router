@@ -20,7 +20,12 @@ const nextConfig = {
   // letter). That throw happens at module scope, so every consumer of `open` dies on
   // import — including xAI/Grok token refresh, which loads the OAuth service that imports
   // it. Keeping it external preserves the real `import.meta.url` at runtime.
-  serverExternalPackages: ["better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "open"],
+  // @aws-sdk/credential-providers must stay external for the same class of reason: it reads
+  // ~/.aws/config and the SSO token cache from disk at runtime and resolves its credential
+  // plugins by dynamic require, neither of which survives bundling.
+  // wreq-js resolves its rust native binding by relative require paths from its own
+  // package dir — bundling breaks those paths ("Failed to load native module").
+  serverExternalPackages: ["better-sqlite3", "sql.js", "node:sqlite", "bun:sqlite", "open", "@aws-sdk/credential-providers", "wreq-js"],
   turbopack: {
     root: tracingRoot
   },
@@ -40,15 +45,13 @@ const nextConfig = {
     // Tree-shake heavy barrel imports to cut compile + bundle size
     optimizePackageImports: ["@xyflow/react", "@dnd-kit/core", "@dnd-kit/sortable", "material-symbols", "marked"],
   },
-  webpack: (config, { isServer }) => {
-    // better-sqlite3 is an optional native accelerator. Keep server builds
-    // reproducible when npm skips it and let the runtime database driver fall
-    // back to node:sqlite or sql.js.
-    if (isServer) {
-      config.externals = [
-        ...(config.externals || []),
-        { "better-sqlite3": "commonjs better-sqlite3" },
-      ];
+  webpack: (config, { isServer, dev }) => {
+    // Webpack's WASM hash pool reserves 4 GiB per instance, even with a small heap.
+    // Native hashing leaves address space for cache serialization in bounded builds.
+    if (!dev) config.output.hashFunction = "sha256";
+    // Compress cache packs so partial writes do not copy large uncompressed buffers.
+    if (config.cache && config.cache.type === "filesystem") {
+      config.cache.compression = "gzip";
     }
     // Ignore fs/path modules in browser bundle
     if (!isServer) {

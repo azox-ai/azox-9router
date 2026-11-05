@@ -40,7 +40,7 @@ beforeEach(() => {
 
 describe("assistant prefill error classification", () => {
   it("never cools an aborted request, even with stale reset metadata", async () => {
-    expect(checkFallbackError(499, "Request aborted")).toEqual({ shouldFallback: false, cooldownMs: 0 });
+    expect(checkFallbackError(499, "Request aborted")).toEqual({ shouldFallback: false, cooldownMs: 0, requestScoped: true });
     await expect(markAccountUnavailable("claude-a", 499, "Request aborted", "claude", "claude-opus-4-6", Date.now() + 60_000))
       .resolves.toEqual({ shouldFallback: false, cooldownMs: 0 });
     expect(dbMocks.updateProviderConnection).not.toHaveBeenCalled();
@@ -50,6 +50,7 @@ describe("assistant prefill error classification", () => {
     expect(checkFallbackError(400, PREFILL_ERROR, 2)).toEqual({
       shouldFallback: false,
       cooldownMs: 0,
+      requestScoped: true,
     });
   });
 
@@ -89,11 +90,23 @@ describe("assistant prefill error classification", () => {
     ]);
   });
 
-  it("stops combo fallback for another HTTP 400", async () => {
-    const response400 = new Response(JSON.stringify({
+  // Upstream v0.5.111 classifies every other 4xx as request-scoped: the combo
+  // advances to the next member, never cools the account, and when all members
+  // reject the request it returns the first rejected response intact.
+  it("treats another HTTP 400 as request-scoped and returns the rejection intact", async () => {
+    const response400 = () => new Response(JSON.stringify({
       error: { type: "invalid_request_error", message: "max_tokens must be positive" },
     }), { status: 400, headers: { "Content-Type": "application/json" } });
-    const handleSingleModel = vi.fn().mockResolvedValue(response400);
+    const rejected = [response400(), response400()];
+    const handleSingleModel = vi.fn()
+      .mockResolvedValueOnce(rejected[0])
+      .mockResolvedValueOnce(rejected[1]);
+
+    expect(checkFallbackError(400, "max_tokens must be positive", 2)).toEqual({
+      shouldFallback: false,
+      cooldownMs: 0,
+      requestScoped: true,
+    });
 
     const response = await handleComboChat({
       body: { messages: [{ role: "user", content: "Start" }] },
@@ -103,12 +116,19 @@ describe("assistant prefill error classification", () => {
       autoSwitch: false,
     });
 
-    expect(response.status).toBe(response400.status);
-    expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    // Upstream request-scoped contract: the first rejection is returned as the
+    // same Response object, not a rebuilt copy with synthetic headers.
+    expect(response).toBe(rejected[0]);
+    expect(response.status).toBe(400);
+    expect(response.headers.get("content-type")).toBe("application/json");
     expect(await response.json()).toEqual({
       error: { type: "invalid_request_error", message: "max_tokens must be positive" },
     });
-    expect(handleSingleModel).toHaveBeenCalledTimes(1);
+    expect(handleSingleModel.mock.calls.map(([, model]) => model)).toEqual([
+      "claude/claude-opus-5",
+      "openai/gpt-5.6-sol",
+    ]);
+    expect(dbMocks.updateProviderConnection).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -4,6 +4,7 @@
 import { describe, it, expect } from "vitest";
 import { PROVIDERS } from "../../open-sse/config/providers.js";
 import { DefaultExecutor } from "../../open-sse/executors/default.js";
+import { normalizeDynamicHeaders } from "./header-snapshot.js";
 
 // Credentials mẫu cố định (deterministic) — KHÔNG dùng Date.now/random.
 const API_KEY_CRED = { apiKey: "sk-test-APIKEY", providerSpecificData: {} };
@@ -23,10 +24,14 @@ const SPECIALIZED = new Set([
   "xiaomi-tokenplan", "mimo-free",
 ]);
 
+// Per-process / per-request values: kimi's random device name, minimax's session UUID.
+const VOLATILE_HEADERS = new Set(["x-msh-device-name", "x-mavis-session-id"]);
+
 // Sanitize header: khử token + field thời gian động (kimi X-Msh-Device-Id) để snapshot ổn định.
 function sanitize(headers) {
   const out = {};
   for (const [k, v] of Object.entries(headers)) {
+    if (VOLATILE_HEADERS.has(k.toLowerCase())) { out[k] = "<VOLATILE>"; continue; }
     out[k] = typeof v === "string"
       ? v.replace(/Bearer .+/, "Bearer <TOK>")
           .replace(/sk-test-APIKEY|tok-test-ACCESS/g, "<CRED>")
@@ -57,10 +62,16 @@ describe("GOLDEN buildHeaders (default executor providers)", () => {
   for (const pid of providerIds) {
     it(`${pid} → headers (apiKey / oauth)`, () => {
       const ex = new DefaultExecutor(pid);
+      function build(credentials, stream) {
+        const raw = safe(() => ex.buildHeaders(PROVIDERS[pid].noAuth ? {} : credentials, stream));
+        // Semantic failures must escape safe(), never become accepted THROW snapshots.
+        const checked = normalizeDynamicHeaders(pid, raw);
+        return typeof checked === "string" ? checked : sanitize(checked);
+      }
       const snap = {
-        apiKey: safe(() => sanitize(ex.buildHeaders(PROVIDERS[pid].noAuth ? {} : API_KEY_CRED, true))),
-        oauth: safe(() => sanitize(ex.buildHeaders(PROVIDERS[pid].noAuth ? {} : OAUTH_CRED, true))),
-        nonStream: safe(() => sanitize(ex.buildHeaders(PROVIDERS[pid].noAuth ? {} : API_KEY_CRED, false))),
+        apiKey: build(API_KEY_CRED, true),
+        oauth: build(OAUTH_CRED, true),
+        nonStream: build(API_KEY_CRED, false),
       };
       expect(snap).toMatchSnapshot();
     });

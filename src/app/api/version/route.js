@@ -30,9 +30,10 @@ function fetchLatestVersion() {
   });
 }
 
+// Compare upstream release cores; an AZOX suffix must not hide patch updates.
 function compareVersions(a, b) {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
+  const pa = a.split("-")[0].split(".").map(Number);
+  const pb = b.split("-")[0].split(".").map(Number);
   for (let i = 0; i < 3; i++) {
     if (pa[i] > pb[i]) return 1;
     if (pa[i] < pb[i]) return -1;

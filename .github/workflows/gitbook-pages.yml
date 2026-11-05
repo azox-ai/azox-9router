@@ -19,9 +19,9 @@ jobs:
       run:
         working-directory: gitbook
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
 
@@ -38,7 +38,7 @@ jobs:
         run: touch out/.nojekyll
 
       - name: Deploy to 9router.github.io
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4
         with:
           deploy_key: ${{ secrets.GH_PAGES_DEPLOY_KEY }}
           external_repository: 9router/9router.github.io
