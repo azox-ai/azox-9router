@@ -26,10 +26,18 @@ concurrency:
 env:
   DOCKERHUB_IMAGE: decolua/9router
 
+# Azox fork tags (<upstream>-azox.<n>) are internal release markers: package.json keeps
+# the upstream version, so the strict semver/version-match validation in `prepare` rejects
+# the tag. Every job therefore carries the guard `!(push of a v* tag containing '-azox')`
+# so such a push skips the whole run instead of turning the run list red.
+# `workflow_dispatch` (republish by tag) is unaffected.
+# (The guard is inlined per job: the `env` context is not available in `jobs.<id>.if`.)
+
 jobs:
   prepare:
     name: Validate release
     runs-on: ubuntu-latest
+    if: "!(github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && contains(github.ref_name, '-azox'))"
     timeout-minutes: 10
     permissions:
       contents: read
@@ -125,6 +133,7 @@ jobs:
   build:
     name: Build ${{ matrix.platform }}
     needs: prepare
+    if: "!(github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && contains(github.ref_name, '-azox'))"
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
@@ -228,6 +237,7 @@ jobs:
     needs:
       - prepare
       - build
+    if: "!(github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && contains(github.ref_name, '-azox'))"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
