@@ -30,7 +30,7 @@ function validate(manifests) {
     catch (error) { if (error.code !== "ENOENT") throw error; }
     return spawnSync("bash", ["-c", step], { cwd: dir, encoding: "utf8", timeout: 5000,
       env: { PATH: `${join(dir, "bin")}:${process.env.PATH}`, HOME: dir, RUNNER_TEMP: dir,
-        GHCR_IMAGE: "ghcr.io/azox-ai/azox-9router", VERSION: "0.5.112-azox.1",
+        GHCR_IMAGE: "ghcr.io/azox-ai/azox-9router", VERSION: "0.5.119-azox.1",
         INDEX_JSON: JSON.stringify({ schemaVersion: 2, manifests }) } });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
