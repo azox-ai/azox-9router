@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const ref = process.env.AZOX_RETIREMENT_REF;
-const upstream = "1fe586bb1cf35e1ed0cb2150a8ef7d1db040b21d";
+const upstream = "1855aa44473e88feac9d3f131b9c0c5fc9706b68";
 
 function source(path, revision = ref) {
   if (revision) return execFileSync("git", ["show", `${revision}:${path}`], { cwd: root, encoding: "utf8" });
@@ -42,7 +42,7 @@ test("Contributor is not allowed through the public dashboard guard", () => {
   // Every upstream line stays in place, so no upstream gate is removed or loosened.
   const upstreamLines = source("src/dashboardGuard.js", upstream).split("\n");
   const candidateLines = new Set(guard.split("\n"));
-  assert.deepEqual(upstreamLines.filter(line => !candidateLines.has(line)), []);
+  assert.deepEqual(upstreamLines.filter(line => !candidateLines.has(line) && !line.includes("/api/settings/database")), []);
 });
 
 test("direct-login OAuth retains normal handlers without Contributor hooks", () => {
@@ -81,4 +81,17 @@ test("manifest retires Contributor and combo import/export without claiming a pr
     "claude_assistant_prefill", "claude_cache", "portal_credential_sync",
   ]);
   assert.doesNotMatch(JSON.stringify(manifest.supported_customizations), /contribut/i);
+});
+
+// Database export/import is intentionally retired, including the public DB barrel.
+// Schema-migration safety backup (db/migrate.js -> db/backup.js) remains internal.
+test("database export/import UI, route, and public functions stay retired", () => {
+  const paths = routes();
+  assert.equal(paths.includes("src/app/api/settings/database/route.js"), false);
+  const profile = source("src/app/(dashboard)/dashboard/profile/page.js");
+  assert.doesNotMatch(profile, /Download Backup|Import Backup|api\/settings\/database|handleExportDatabase|handleImportDatabase/);
+  assert.doesNotMatch(source("src/dashboardGuard.js"), /api\/settings\/database/);
+  assert.doesNotMatch(source("src/lib/db/index.js"), /\b(?:exportDb|importDb)\b/);
+  assert.doesNotMatch(source("src/lib/localDb.js"), /\b(?:exportDb|importDb)\b/);
+  assert.match(source("src/lib/db/migrate.js"), /backupDbLite/);
 });
