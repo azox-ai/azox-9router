@@ -30,10 +30,6 @@ export default function ProfilePage() {
   const [passwords, setPasswords] = useState({ current: "", new: "", confirm: "" });
   const [passStatus, setPassStatus] = useState({ type: "", message: "" });
   const [passLoading, setPassLoading] = useState(false);
-  const [dbLoading, setDbLoading] = useState(false);
-  const [dbStatus, setDbStatus] = useState({ type: "", message: "" });
-  const [dbAuth, setDbAuth] = useState({ open: false, mode: "", password: "" });
-  const pendingImportRef = useRef(null);
   const [oidcForm, setOidcForm] = useState({
     authMode: "password",
     oidcIssuerUrl: "",
@@ -71,7 +67,6 @@ export default function ProfilePage() {
   const idpMetadataFileRef = useRef(null);
   const certFileRef = useRef(null);
 
-  const importFileRef = useRef(null);
   const [proxyForm, setProxyForm] = useState({
     outboundProxyEnabled: false,
     outboundProxyUrl: "",
@@ -649,96 +644,6 @@ export default function ProfilePage() {
     }
   };
 
-  const reloadSettings = async () => {
-    try {
-      const res = await fetch("/api/settings");
-      if (!res.ok) return;
-      const data = await res.json();
-      setSettings(data);
-    } catch (err) {
-      console.error("Failed to reload settings:", err);
-    }
-  };
-
-  const handleExportDatabase = async (password) => {
-    setDbLoading(true);
-    setDbStatus({ type: "", message: "" });
-    try {
-      const res = await fetch("/api/settings/database", {
-        headers: { "x-9r-password": password },
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Failed to export database");
-      }
-
-      const payload = await res.json();
-      const content = JSON.stringify(payload, null, 2);
-      const blob = new Blob([content], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      const stamp = new Date().toISOString().replace(/[.:]/g, "-");
-      anchor.href = url;
-      anchor.download = `9router-backup-${stamp}.json`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-      URL.revokeObjectURL(url);
-
-      setDbStatus({ type: "success", message: "Database backup downloaded" });
-    } catch (err) {
-      setDbStatus({ type: "error", message: err.message || "Failed to export database" });
-    } finally {
-      setDbLoading(false);
-    }
-  };
-
-  const handleImportDatabase = (event) => {
-    const file = event.target.files?.[0];
-    if (importFileRef.current) importFileRef.current.value = "";
-    if (!file) return;
-    pendingImportRef.current = file;
-    setDbStatus({ type: "", message: "" });
-    setDbAuth({ open: true, mode: "import", password: "" });
-  };
-
-  const runImportDatabase = async (password) => {
-    const file = pendingImportRef.current;
-    if (!file) return;
-    setDbLoading(true);
-    try {
-      const raw = await file.text();
-      const payload = JSON.parse(raw);
-
-      const res = await fetch("/api/settings/database", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...payload, password }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to import database");
-      }
-
-      await reloadSettings();
-      setDbStatus({ type: "success", message: "Database imported successfully" });
-    } catch (err) {
-      setDbStatus({ type: "error", message: err.message || "Invalid backup file" });
-    } finally {
-      pendingImportRef.current = null;
-      setDbLoading(false);
-    }
-  };
-
-  // Confirm password modal, then run export or import.
-  const handleDbAuthConfirm = async () => {
-    const { mode, password } = dbAuth;
-    setDbAuth({ open: false, mode: "", password: "" });
-    if (mode === "export") await handleExportDatabase(password);
-    else if (mode === "import") await runImportDatabase(password);
-  };
-
   const observabilityEnabled = settings.enableObservability === true;
 
   const handleShutdown = async () => {
@@ -806,38 +711,7 @@ export default function ProfilePage() {
                 <p className="text-xs sm:text-sm text-text-muted font-mono break-all">~/.9router/db/data.sqlite</p>
               </div>
             </div>
-            <div className="flex flex-col sm:flex-row gap-2">
-              <Button
-                variant="secondary"
-                icon="download"
-                onClick={() => setDbAuth({ open: true, mode: "export", password: "" })}
-                loading={dbLoading}
-                className="w-full sm:w-auto"
-              >
-                Download Backup
-              </Button>
-              <Button
-                variant="outline"
-                icon="upload"
-                onClick={() => importFileRef.current?.click()}
-                disabled={dbLoading}
-                className="w-full sm:w-auto"
-              >
-                Import Backup
-              </Button>
-              <input
-                ref={importFileRef}
-                type="file"
-                accept="application/json,.json"
-                className="hidden"
-                onChange={handleImportDatabase}
-              />
-            </div>
-            {dbStatus.message && (
-              <p className={`text-sm ${dbStatus.type === "error" ? "text-red-500" : "text-green-600 dark:text-green-400"}`}>
-                {dbStatus.message}
-              </p>
-            )}
+
           </div>
         </Card>
 
@@ -1669,34 +1543,6 @@ export default function ProfilePage() {
         loading={isShuttingDown}
       />
 
-      <Modal
-        isOpen={dbAuth.open}
-        onClose={() => setDbAuth({ open: false, mode: "", password: "" })}
-        title="Confirm Password"
-        size="sm"
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setDbAuth({ open: false, mode: "", password: "" })} disabled={dbLoading}>
-              Cancel
-            </Button>
-            <Button variant="primary" onClick={handleDbAuthConfirm} loading={dbLoading} disabled={!dbAuth.password}>
-              Confirm
-            </Button>
-          </>
-        }
-      >
-        <p className="text-text-muted mb-3 text-sm">
-          Enter your current password to {dbAuth.mode === "export" ? "export" : "import"} the database.
-        </p>
-        <Input
-          type="password"
-          value={dbAuth.password}
-          onChange={(e) => setDbAuth((s) => ({ ...s, password: e.target.value }))}
-          onKeyDown={(e) => { if (e.key === "Enter" && dbAuth.password) handleDbAuthConfirm(); }}
-          placeholder="Current password"
-          autoFocus
-        />
-      </Modal>
     </div>
   );
 }

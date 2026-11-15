@@ -26,7 +26,7 @@ describe("custom navigation integration", () => {
 
   it("removes retired import/export page metadata and routes", () => {
     expect(getPageInfo("/dashboard/import-export")).toEqual({ title: "", description: "", breadcrumbs: [] });
-    for (const path of ["app/(dashboard)/dashboard/import-export/page.js", "app/api/import-export/combos/route.js"]) {
+    for (const path of ["app/(dashboard)/dashboard/import-export/page.js", "app/api/import-export/combos/route.js", "app/api/settings/database/route.js"]) {
       expect(existsSync(new URL(`../../src/${path}`, import.meta.url))).toBe(false);
     }
   });

@@ -56,7 +56,7 @@ export function filterToOpenAIFormat(body, opts = {}) {
       }
       
       const content = !keepCache && filteredContent.length > 1
-        ? collapseTextParts(filteredContent)
+        ? collapseTextParts(filteredContent, { collapseMultipleText: true })
         : filteredContent;
       return { ...msg, content };
     }

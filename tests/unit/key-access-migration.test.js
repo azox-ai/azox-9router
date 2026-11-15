@@ -81,23 +81,4 @@ describe("apiKeys access columns: upgrade from the previous schema", () => {
     expect((await db.getApiKeyById(created.id)).access).toEqual({ restricted: false, allow: [] });
   });
 
-  it("export/import round-trips access; a backup without access restores unrestricted; malformed access is refused", async () => {
-    writeLegacyDb(tempDir);
-    const { db } = await boot();
-    await db.updateApiKey("k1", { access: { restricted: true, allow: ["Main"] } });
-    const dump = await db.exportDb();
-    expect(dump.apiKeys.find((k) => k.id === "k1").access).toEqual({ restricted: true, allow: ["Main"] });
-
-    await db.importDb(dump);
-    expect((await db.getApiKeyById("k1")).access).toEqual({ restricted: true, allow: ["Main"] });
-
-    const legacy = { ...dump, apiKeys: dump.apiKeys.map(({ access, ...rest }) => rest) };
-    await db.importDb(legacy);
-    expect((await db.getApiKeyById("k1")).access).toEqual({ restricted: false, allow: [] });
-
-    const bad = { ...dump, apiKeys: [{ ...dump.apiKeys[0], access: { restricted: "yes", allow: [] } }] };
-    await expect(db.importDb(bad)).rejects.toThrow(/access/);
-    // The failed import rolled back: the previous rows are still there.
-    expect((await db.getApiKeys()).length).toBe(2);
-  });
 });

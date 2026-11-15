@@ -343,6 +343,7 @@ export function createSSEStream(options = {}) {
       catch (error) {
         if (error?.code === "INCOMPLETE_STREAM") throw error;
         fail(controller, "Invalid or oversized upstream SSE frame");
+
       }
     },
     flush(controller) {
@@ -354,6 +355,7 @@ export function createSSEStream(options = {}) {
         if (!terminalState.terminal && !tracksTerminal) { terminalState.finish("completed"); done(controller); }
         if (!terminalState.terminal) fail(controller);
         else if (!terminalState.doneSent && clientFormat !== FORMATS.CLAUDE) done(controller);
+
       } catch (error) {
         if (error?.code === "INCOMPLETE_STREAM") {
           if (completionFlushTimer) { clearTimeout(completionFlushTimer); completionFlushTimer = null; }

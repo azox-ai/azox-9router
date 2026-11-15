@@ -39,9 +39,9 @@ function validate(tag, { rootVersion, cliVersion, event = "push" } = {}) {
 }
 
 test("AZOX release tag validates real package versions without promoting latest", () => {
-  const result = validate("v0.5.112-azox.1");
+  const result = validate("v0.5.119-azox.1");
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.outputs, /^version=0\.5\.112-azox\.1$/m);
+  assert.match(result.outputs, /^version=0\.5\.119-azox\.1$/m);
   assert.match(result.outputs, /^commit=1111111111111111111111111111111111111111$/m);
   assert.match(result.outputs, /^ghcr_image=ghcr\.io\/azox-ai\/azox-9router$/m);
   assert.match(result.outputs, /^publish_dockerhub=false$/m);
