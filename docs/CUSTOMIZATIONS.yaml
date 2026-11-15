@@ -505,6 +505,19 @@
       "choice": "option 3",
       "confidence": 0.8592837249617677
     },
+    "guard_decision": {
+      "finding": "Upstream v0.5.119 adds /api/oauth/commandcode/auto-import, which reads the host Command Code auth file and returns its API key. The fork guard protected the sibling cursor/kiro/zed auto-import routes but not this one.",
+      "options": [
+        "Add the route to ALWAYS_PROTECTED and LOCAL_ONLY_PATHS like its siblings",
+        "Add it to ALWAYS_PROTECTED only",
+        "Leave the upstream exposure unchanged"
+      ],
+      "manager": "option 1; guard-only change, route handler unchanged",
+      "nine_decision_id": "acfc2b39-6d15-4918-bc12-bbcf710b01df",
+      "choice": "option 1",
+      "confidence": 0.955,
+      "tests": "tests/unit/dashboard-guard.test.js host credential auto-import routes: 2 tests fail before the guard change, 42/42 pass after"
+    },
     "qualification": {
       "candidate_full_suite": "5343 total, 5201 pass, 40 fail, 101 skipped, 1 todo; exit 1. No candidate-only failure compared with clean upstream v0.5.119 and fork master; three A3 prefill divergences, one sqljs baseline failure. Upstream 4727 total/4575 pass/50 fail/101 skipped/1 todo; master 4979 total/4861 pass/19 fail/98 skipped/1 todo. Counts from local qualification; live tests can vary.",
       "candidate_build": "npm run build exit 0; Next.js compiled and 152/152 static pages generated",
