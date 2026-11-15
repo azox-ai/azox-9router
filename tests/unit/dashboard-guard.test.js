@@ -342,6 +342,42 @@ describe("dashboard guard local-only access", () => {
   });
 });
 
+describe("host credential auto-import routes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
+    mocks.getSettings.mockResolvedValue({ requireLogin: false });
+    mocks.validateApiKey.mockResolvedValue(false);
+    mocks.getConsistentMachineId.mockResolvedValue("cli-token");
+    mocks.verifyDashboardAuthToken.mockResolvedValue(false);
+  });
+
+  it.each(["commandcode", "cursor", "kiro", "zed"])(
+    "keeps /api/oauth/%s/auto-import local-only when requireLogin=false", async (provider) => {
+      const response = await proxy(request(`/api/oauth/${provider}/auto-import`, { host: "router.example.com" }));
+      expect(response.status).toBe(403);
+    },
+  );
+
+  it.each(["commandcode", "cursor", "kiro", "zed"])(
+    "requires a JWT or CLI token for loopback /api/oauth/%s/auto-import when requireLogin=false", async (provider) => {
+      const response = await proxy(localRequest(`/api/oauth/${provider}/auto-import`, {
+        host: "localhost:20128",
+        origin: "http://localhost:20128",
+      }));
+      expect(response).toEqual({ status: 401, body: { error: "Unauthorized" } });
+    },
+  );
+
+  it("allows /api/oauth/commandcode/auto-import with a valid CLI token", async () => {
+    const response = await proxy(request("/api/oauth/commandcode/auto-import", {
+      host: "router.example.com",
+      "x-9r-cli-token": "cli-token",
+    }));
+    expect(response).toBe(mocks.nextResponse);
+  });
+});
+
 describe("dashboard guard helpers", () => {
   it("extracts bearer API keys before x-api-key", () => {
     const apiRequest = request("/v1/chat/completions", {
