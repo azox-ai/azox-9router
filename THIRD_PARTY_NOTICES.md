@@ -48,7 +48,7 @@ How to replace the LGPL library (LGPLv3 section 4(d)(1)):
 
 ### node-forge: BSD-3-Clause elected
 
-`node-forge` 1.4.2 is offered under `(BSD-3-Clause OR GPL-2.0)`. **For this distribution, 9router elects the BSD-3-Clause license.** The original LICENSE file, including the BSD notice of Digital Bazaar, Inc., is reproduced below.
+`node-forge` 1.4.4 is offered under `(BSD-3-Clause OR GPL-2.0)`. **For this distribution, 9router elects the BSD-3-Clause license.** The original LICENSE file, including the BSD notice of Digital Bazaar, Inc., is reproduced below.
 
 ## License summary
 
@@ -88,7 +88,7 @@ How to replace the LGPL library (LGPLv3 section 4(d)(1)):
 | `@img/sharp-libvips-linux-x64` | 1.3.4 | `LGPL-3.0-or-later` | traced standalone (glibc x64) | `third_party/license-sources/@img/sharp-libvips-linux-x64/README.md` |
 | `@img/sharp-linux-x64` | 0.35.5 | `Apache-2.0` | traced standalone (glibc x64) | `third_party/license-sources/@img/sharp-linux-x64/LICENSE` |
 | `@img/sharp-wasm32` | 0.35.5 | `Apache-2.0 AND LGPL-3.0-or-later AND MIT` | traced standalone (glibc x64) | `third_party/license-sources/@img/sharp-wasm32/LICENSE`<br>`third_party/license-sources/@img/sharp-wasm32/README.md` |
-| `@next/env` | 16.4.3 | `MIT` | traced standalone (glibc x64) | no license file in package; package.json author: Next.js Team <support@vercel.com>; repository: https://github.com/vercel/next.js |
+| `@next/env` | 16.4.6 | `MIT` | traced standalone (glibc x64) | no license file in package; package.json author: Next.js Team <support@vercel.com>; repository: https://github.com/vercel/next.js |
 | `@smithy/core` | 3.37.0 | `Apache-2.0` | traced standalone (glibc x64) | `third_party/license-sources/@smithy/core/LICENSE` |
 | `@smithy/credential-provider-imds` | 4.5.2 | `Apache-2.0` | traced standalone (glibc x64) | `third_party/license-sources/@smithy/credential-provider-imds/LICENSE` |
 | `@smithy/node-http-handler` | 4.13.0 | `Apache-2.0` | traced standalone (glibc x64) | `third_party/license-sources/@smithy/node-http-handler/LICENSE` |
@@ -113,9 +113,9 @@ How to replace the LGPL library (LGPLv3 section 4(d)(1)):
 | `is-inside-container` | 1.0.0 | `MIT` | traced standalone (glibc x64) | `third_party/license-sources/is-inside-container/license` |
 | `is-wsl` | 3.1.1 | `MIT` | traced standalone (glibc x64) | `third_party/license-sources/is-wsl/license` |
 | `nanoid` | 3.3.20 | `MIT` | traced standalone (glibc x64) | `third_party/license-sources/nanoid/LICENSE` |
-| `next` | 16.4.3 | `MIT` | traced standalone (glibc x64); Dockerfile copy | `third_party/license-sources/next/license.md` |
+| `next` | 16.4.6 | `MIT` | traced standalone (glibc x64); Dockerfile copy | `third_party/license-sources/next/license.md` |
 | `next/node_modules/postcss` | 8.5.23 | `MIT` | traced standalone (glibc x64) | `third_party/license-sources/next/node_modules/postcss/LICENSE` |
-| `node-forge` | 1.4.2 | `(BSD-3-Clause OR GPL-2.0)` | Dockerfile copy | `third_party/license-sources/node-forge/LICENSE` |
+| `node-forge` | 1.4.4 | `(BSD-3-Clause OR GPL-2.0)` | Dockerfile copy | `third_party/license-sources/node-forge/LICENSE` |
 | `node-machine-id` | 1.1.12 | `MIT` | Dockerfile copy | `third_party/license-sources/node-machine-id/LICENSE` |
 | `open` | 11.0.4 | `MIT` | traced standalone (glibc x64) | `third_party/license-sources/open/license` |
 | `picocolors` | 1.1.1 | `ISC` | traced standalone (glibc x64) | `third_party/license-sources/picocolors/LICENSE` |

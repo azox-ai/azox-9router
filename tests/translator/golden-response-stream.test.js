@@ -1,6 +1,6 @@
-// P0 GOLDEN: lock OUTPUT của translateResponse (stream) cho các concern đặc biệt.
-// Feed chuỗi chunk THẬT (shape provider) → snapshot mảng chunk openai emit.
-// Sau refactor chạy lại phải khớp y hệt (chunk/usage/thinking/tool/finish).
+// P0 GOLDEN: lock the translateResponse (stream) OUTPUT for special concerns.
+// Feed a REAL chunk sequence (provider shape) → snapshot the array of chunks openai emits.
+// After the refactor, re-running must match exactly (chunk/usage/thinking/tool/finish).
 import { describe, it, expect, vi } from "vitest";
 import "./registerAll.js";
 import { translateResponse, initState } from "../../open-sse/translator/index.js";
@@ -9,7 +9,7 @@ import { createSSETransformStreamWithLogger } from "../../open-sse/utils/stream.
 
 vi.mock("@/lib/usageDb.js", () => ({ trackPendingRequest: vi.fn(), appendRequestLog: vi.fn(async () => {}) }));
 
-// Chuẩn hoá field động (Date.now trong created + id) để snapshot ổn định.
+// Normalize dynamic fields (Date.now in created + id) so snapshots stay stable.
 function stripVolatile(chunks) {
   return JSON.parse(JSON.stringify(chunks), (key, val) => {
     if (key === "created") return 0;
@@ -23,7 +23,7 @@ function stripVolatile(chunks) {
   });
 }
 
-// Chạy 1 chuỗi event qua translateResponse, gom toàn bộ chunk emit.
+// Run one event sequence through translateResponse, collecting every emitted chunk.
 function runStream(targetFormat, sourceFormat, events) {
   const state = initState(sourceFormat);
   const all = [];

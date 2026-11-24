@@ -352,14 +352,14 @@ describe("host credential auto-import routes", () => {
     mocks.verifyDashboardAuthToken.mockResolvedValue(false);
   });
 
-  it.each(["commandcode", "cursor", "kiro", "zed"])(
+  it.each(["commandcode", "cursor", "kiro", "xiaomi-mimo", "zed"])(
     "keeps /api/oauth/%s/auto-import local-only when requireLogin=false", async (provider) => {
       const response = await proxy(request(`/api/oauth/${provider}/auto-import`, { host: "router.example.com" }));
       expect(response.status).toBe(403);
     },
   );
 
-  it.each(["commandcode", "cursor", "kiro", "zed"])(
+  it.each(["commandcode", "cursor", "kiro", "xiaomi-mimo", "zed"])(
     "requires a JWT or CLI token for loopback /api/oauth/%s/auto-import when requireLogin=false", async (provider) => {
       const response = await proxy(localRequest(`/api/oauth/${provider}/auto-import`, {
         host: "localhost:20128",
