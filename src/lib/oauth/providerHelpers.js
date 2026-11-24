@@ -3,6 +3,7 @@ import {
   cancelModelCatalogBody,
   readModelCatalogJson,
 } from "../../../open-sse/services/modelCatalogResponse.js";
+import { buildKiroIdentityHeaders } from "open-sse/shared/kiroIdentity.js";
 
 const BASE64_BLOCK_SIZE = 4;
 const KIRO_PROFILE_FETCH_TIMEOUT_MS = 10_000;
@@ -87,6 +88,7 @@ export async function fetchKiroProfileArn(
         "Content-Type": "application/json",
         Accept: "application/json",
         Authorization: `Bearer ${accessToken}`,
+        ...buildKiroIdentityHeaders({ accessToken }),
       },
       body: JSON.stringify({ maxResults: 10 }),
       signal: controller.signal,

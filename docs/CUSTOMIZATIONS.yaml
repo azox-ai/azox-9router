@@ -3,8 +3,8 @@
   "format_note": "JSON-compatible YAML; no additional parser dependency.",
   "upstream": {
     "repository": "https://github.com/decolua/9router",
-    "ref": "v0.5.119",
-    "sha": "1855aa44473e88feac9d3f131b9c0c5fc9706b68"
+    "ref": "v0.5.123",
+    "sha": "5ae63d22847e07042e235b40e1d926b65e509013"
   },
   "fork_baseline": "1f508bcfa7f2b0e76662be7aefd39d0087747aa5",
   "scope": "AZO-917 assistant-prefill/cache slice plus AZO-929 Contributor retirement plus AZO-936 historical combo import/export carry (retired by A12 in AZO-1214) plus AZO-945 Portal access-token-only credential sync plus AZO-969 self-hosted Inter, compressed production webpack cache, native production webpack hashing and bounded tracing reads. AZO-950 completed offline qualification of PR17; its full suite remains red against the documented upstream baseline. AZO-998 aligns both package versions with the proposed v0.5.112-azox.1 tag; no tag is created. AZO-1001 pins the official Node base image digest, commits the qualified root lock and locks the Docker recipe; local candidate qualification is recorded under azo_1001_checkpoint. AZO-999 reconciles the qualified candidate with the pinned fork baseline, carrying narrow telemetry, OAuth transport, error-body bounds and standalone/SQL.js integrity seams. No image was built or run. Integration qualification is recorded in azo_999_checkpoint; it does not authorize merge into master or release.",
@@ -519,5 +519,30 @@
       "Upstream Gemini tool-result ordering relies on preserving multi-part text arrays; scope AZOX text-only flattening to Claude/OpenAI paths, not shared Gemini helper. Tests: tests/unit/gemini-request-tool-results.test.js and tests/unit/translator-request-normalization.test.js"
     ],
     "scope_note": "Upstream v0.5.119 adds Synthetic and SenseNova Intl provider implementations; keep their source for upstream ancestry but do not enable or configure new provider connections on zbs0. No auth, credential, network or billing change authorized."
+  },
+  "release_upgrade_v05123": {
+    "task": "AZO-1301",
+    "upstream": "5ae63d22847e07042e235b40e1d926b65e509013",
+    "fork_parent": "71f419f4",
+    "merge_base": "1855aa44473e88feac9d3f131b9c0c5fc9706b68 (v0.5.119, explicit; automatic merge-base is stale because earlier upgrades were squash-merged)",
+    "strategy": "true two-parent merge (master + v0.5.123) computed with git merge-tree --merge-base=v0.5.119; do not claim ancestry if the PR is squashed",
+    "version": "0.5.123-azox.1",
+    "resolutions": [
+      "package.json/cli/package.json: version 0.5.123-azox.1, upstream dependency bumps kept (next 16.4.6, node-forge, eslint-config-next, cli overrides); package-lock regenerated",
+      "src/lib/oauth/providerHelpers.js: both AZOX modelCatalogResponse imports and upstream buildKiroIdentityHeaders kept",
+      "open-sse/handlers/chatCore.js and src/sse/handlers/chat.js: AZOX signal/mutation-attempt kept, upstream reaAllowEnabled added",
+      "open-sse/executors/antigravity.js: readBodyOnce DNS-bypass response serves cached text through body stream so bounded parseUpstreamError still works",
+      "src/dashboardGuard.js: /api/oauth/xiaomi-mimo/auto-import added to ALWAYS_PROTECTED and LOCAL_ONLY_PATHS (reads host ~/.local/share/mimocode/auth.json); tests/unit/dashboard-guard.test.js covers it. 9decision include_guard confidence 0.874 decision_id c0868622-f77a-45a5-975e-81043f771536",
+      "third_party/standalone-closure-glibc-x64.json, license-sources.json and THIRD_PARTY_NOTICES.md regenerated for next/@next/env 16.4.6 and node-forge 1.4.4",
+      "tests/unit/release-version.node-test.js pinned to v0.5.123-azox.1"
+    ],
+    "retired_stay_removed": [
+      "Contributor",
+      "combo/database export/import"
+    ],
+    "new_upstream_routes": "media-providers/tts/elevenlabs/models is under protected /api/media-providers and reads no host secret",
+    "accepted_divergences": "Only the three A3 assistant-prefill failures (claude-trailing-user-turn-source-formats.test.js:18,:29; claude-trailing-user-turn.test.js:66) are candidate-only; no test skipped or deleted",
+    "evidence": "contract vitest 318 pass / 3 A3; node tests 50/50; full suite upstream 4998 total/49 fail vs candidate 5613 total/38 fail, candidate-only failures are the 3 A3; build exit 0",
+    "scope_note": "No auth, credential, network or billing change. Deploy to zbs0 is a separate gated task."
   }
 }

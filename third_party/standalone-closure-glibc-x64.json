@@ -133,7 +133,7 @@
    {
     "path": "node_modules/@next/env",
     "name": "@next/env",
-    "version": "16.4.3",
+    "version": "16.4.6",
     "license": "MIT"
    },
    {
@@ -283,7 +283,7 @@
    {
     "path": "node_modules/next",
     "name": "next",
-    "version": "16.4.3",
+    "version": "16.4.6",
     "license": "MIT"
    },
    {
