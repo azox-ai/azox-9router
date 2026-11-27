@@ -35,6 +35,25 @@ describe("openaiToClaudeResponse tool argument sanitization", () => {
     });
   });
 
+  it("preserves argument fragments that arrive before the tool ID", () => {
+    const state = createState();
+    const translate = (toolCall, finishReason) => openaiToClaudeResponse({
+      id: "chatcmpl-test-out-of-order",
+      model: "test-model",
+      choices: [{ delta: { tool_calls: [toolCall] }, finish_reason: finishReason }],
+    }, state);
+
+    translate({ index: 1, function: { arguments: '{"file_' } });
+    const start = translate({ index: 1, id: "toolu_read", function: { name: "Read" } });
+    const finish = translate({ index: 1, function: { arguments: 'path":"src/index.js"}' } }, "tool_calls");
+
+    expect(start).toContainEqual(expect.objectContaining({
+      type: "content_block_start",
+      content_block: expect.objectContaining({ id: "toolu_read" }),
+    }));
+    expect(JSON.parse(getInputJsonDelta(finish))).toEqual({ file_path: "src/index.js" });
+  });
+
   it("keeps valid PDF pages", () => {
     const state = createState();
 

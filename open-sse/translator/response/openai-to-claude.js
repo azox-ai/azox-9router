@@ -231,13 +231,10 @@ export function openaiToClaudeResponse(chunk, state) {
         });
       }
 
-      if (tc.function?.arguments) {
-        const toolInfo = state.toolCalls.get(idx);
-        if (toolInfo) {
-          // Buffer args instead of streaming — sanitize at finish to fix bad params
-          if (!state.toolArgBuffers) state.toolArgBuffers = new Map();
-          state.toolArgBuffers.set(idx, (state.toolArgBuffers.get(idx) || "") + tc.function.arguments);
-        }
+      if (tc.function?.arguments && !state.closedToolBlocks?.has(idx)) {
+        // Buffer by index: fragments can arrive before the tool ID. Sanitize at finish.
+        if (!state.toolArgBuffers) state.toolArgBuffers = new Map();
+        state.toolArgBuffers.set(idx, (state.toolArgBuffers.get(idx) || "") + tc.function.arguments);
       }
     }
   }
